@@ -1,5 +1,6 @@
 const { pool } = require("../config/config");
 const crypto = require("crypto");
+const { encryptPassword, decryptPassword } = require("../helper/helper");
 
 
 const generateModulesCode = async (client) => {
@@ -47,8 +48,6 @@ const getModuleHierarchy = async (client, moduleCode) => {
 };
 
 
-
-
 // main
 async function getAdminData(contact_no) {
   const sql = 'SELECT * FROM users WHERE mobile_no = $1';
@@ -70,16 +69,8 @@ async function getProfileModel(token) {
         email,
         mobile_no,
         role,
-        permissions,
-        assignedmodules,
-        assignedsubmodules,
-        assigneddatasets,
-        datasetaccess,
-        dataassignment,
-        hierarchicaldataassignment,
-        module_permissions,
-        team_id,
-        parent_id,
+        last_login,
+        email_verified,
         is_active,
         created_at,
         updated_at
@@ -109,163 +100,302 @@ async function insertLoginHistory(user_id, ip_address, user_agent) {
 };
 
 async function fetchUsers(currentUser, filters = {}) {
-  const {
-    role = "all",
-    parent_id = "all",
-    username = "all",
-    status = "all",
-    search = "",
-    page = 1,
-    limit = 1000,
-  } = filters;
-
-  const offset = (page - 1) * limit;
-
-  let whereConditions = `
-    WHERE u.id != $1
-  `;
-
-  const params = [currentUser.id];
-  let paramIndex = 2;
-
-  // role based visibility
-  if (currentUser.role === "leader") {
-    whereConditions += `
-      AND u.role = 'data_entry_operator'
-      AND u.created_by = $${paramIndex}
-    `;
-    params.push(currentUser.id);
-    paramIndex++;
-  }
-
-  // active/inactive/all
-  if (status === "active") {
-    whereConditions += ` AND u.is_active = true `;
-  } else if (status === "inactive") {
-    whereConditions += ` AND u.is_active = false `;
-  }
-
-  // role filter
-  if (role && role !== "all") {
-    whereConditions += ` AND u.role = $${paramIndex} `;
-    params.push(role);
-    paramIndex++;
-  }
-
-  // parent filter
-  if (parent_id && parent_id !== "all") {
-    whereConditions += ` AND u.parent_id = $${paramIndex} `;
-    params.push(Number(parent_id));
-    paramIndex++;
-  }
-
-  // username filter
-  if (username && username !== "all") {
-    whereConditions += ` AND u.username = $${paramIndex} `;
-    params.push(username);
-    paramIndex++;
-  }
-
-  // search filter
-  if (search && search.trim()) {
-    whereConditions += `
-      AND (
-        u.username ILIKE $${paramIndex}
-        OR u.email ILIKE $${paramIndex}
-        OR u.mobile_no ILIKE $${paramIndex}
-        OR u.authenticated_email ILIKE $${paramIndex}
-        OR u.role ILIKE $${paramIndex}
-      )
-    `;
-    params.push(`%${search.trim()}%`);
-    paramIndex++;
-  }
-
-  const baseFrom = `
-    FROM users u
-    LEFT JOIN LATERAL (
-      SELECT STRING_AGG(assignment_token, ',') AS assignment_tokens
-      FROM user_assignments
-      WHERE user_id = u.id
-    ) ua ON true
-    ${whereConditions}
-  `;
-
-  const dataQuery = `
-    SELECT
-      u.id,
-      u.token,
-      u.username,
-      u.email,
-      u.mobile_no AS mobile,
-      u.authenticated_email,
-      u.role,
-      u.permissions,
-      u.is_active,
-      u.created_at,
-      u.last_login,
-      u.created_by,
-      u.address,
-      u.location,
-      u.team_id,
-      u.parent_id,
-
-      u.assigned_modules             AS assignedmodules,
-      u.assigned_sub_modules         AS assignedsubmodules,
-      u.assigned_datasets            AS assigneddatasets,
-      u.dataset_access               AS datasetaccess,
-      u.data_assignment              AS dataassignment,
-      u.hierarchical_data_assignment AS hierarchicaldataassignment,
-
-      u.module_permissions,
-      u.modules_code,
-      u.permission_code,
-      u.assign_code,
-
-      ua.assignment_tokens
-    ${baseFrom}
-    ORDER BY u.created_at DESC
-    LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-  `;
-
-  const countQuery = `
-    SELECT COUNT(*)::int AS total
-    ${baseFrom}
-  `;
-
-  const dataParams = [...params, limit, offset];
-  const countParams = [...params];
-
   try {
-    const [dataResult, countResult] = await Promise.all([
+    const {
+      role = "all",
+      parent_id = "all",
+      username = "all",
+      status = "all",
+      search = "",
+      page = 1,
+      limit = 1000,
+    } = filters;
+
+    const offset = (page - 1) * limit;
+
+    let whereConditions = `
+      WHERE u.id != $1
+    `;
+
+    const params = [currentUser.id];
+    let paramIndex = 2;
+
+    if (currentUser.role === "leader") {
+      whereConditions += `
+        AND u.role = 'data_entry_operator'
+        AND u.created_by = $${paramIndex}
+      `;
+      params.push(currentUser.id);
+      paramIndex++;
+    }
+
+    if (status === "active") {
+      whereConditions += `
+        AND (
+          COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'web')::boolean, false) = true
+          OR
+          COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'mobile')::boolean, false) = true
+        )
+      `;
+    } else if (status === "inactive") {
+      whereConditions += `
+        AND NOT (
+          COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'web')::boolean, false) = true
+          OR
+          COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'mobile')::boolean, false) = true
+        )
+      `;
+    }
+
+    if (role && role !== "all") {
+      whereConditions += ` AND u.role = $${paramIndex} `;
+      params.push(role);
+      paramIndex++;
+    }
+
+    if (parent_id && parent_id !== "all") {
+      whereConditions += ` AND u.parent_id = $${paramIndex} `;
+      params.push(parent_id);
+      paramIndex++;
+    }
+
+    if (username && username !== "all") {
+      whereConditions += ` AND u.username = $${paramIndex} `;
+      params.push(username);
+      paramIndex++;
+    }
+
+    if (search && String(search).trim()) {
+      whereConditions += `
+        AND (
+          u.username ILIKE $${paramIndex}
+          OR u.email ILIKE $${paramIndex}
+          OR u.mobile_no ILIKE $${paramIndex}
+          OR CAST(u.id AS TEXT) ILIKE $${paramIndex}
+        )
+      `;
+      params.push(`%${String(search).trim()}%`);
+      paramIndex++;
+    }
+
+    const dataQuery = `
+      SELECT
+        u.id,
+        u.username,
+        u.email,
+        u.authenticated_email,
+        u.mobile_no,
+        u.password,
+        u.role,
+        u.role_id,
+        u.parent_id,
+        u.created_by,
+        u.modules_code,
+        u.assigned_modules,
+        u.assigned_sub_modules,
+        u.permission_code,
+        u.permissions,
+        u.module_permissions,
+        u.assigned_datasets,
+        u.dataset_access,
+        u.data_assignment,
+        u.hierarchical_data_assignment,
+        u.login_access,
+        u.is_active AS db_is_active,
+        u.created_at,
+        u.updated_at,
+        u.last_login,
+
+        CASE
+          WHEN
+            COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'web')::boolean, false)
+            OR
+            COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'mobile')::boolean, false)
+          THEN true
+          ELSE false
+        END AS is_active,
+
+        COALESCE(udp.data_assignments, '[]'::json) AS user_data_assignments_data,
+        COALESCE(upp.permissions, '[]'::json) AS user_permissions_data,
+
+        json_build_object(
+          'id', u.id,
+          'username', u.username,
+          'email', u.email,
+          'authenticated_email', u.authenticated_email,
+          'mobile_no', u.mobile_no,
+          'role', u.role,
+          'role_id', u.role_id,
+          'parent_id', u.parent_id,
+          'created_by', u.created_by,
+          'modules_code', u.modules_code,
+          'permission_code', u.permission_code,
+          'assigned_modules', u.assigned_modules,
+          'assigned_sub_modules', u.assigned_sub_modules,
+          'permissions', u.permissions,
+          'module_permissions', u.module_permissions,
+          'assigned_datasets', u.assigned_datasets,
+          'dataset_access', u.dataset_access,
+          'data_assignment', u.data_assignment,
+          'hierarchical_data_assignment', u.hierarchical_data_assignment,
+          'login_access', u.login_access,
+          'is_active', u.is_active,
+          'created_at', u.created_at,
+          'updated_at', u.updated_at,
+          'last_login', u.last_login
+        ) AS user_meta
+
+      FROM users u
+
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id', uda.id,
+            'user_id', uda.user_id,
+            'db_table', uda.db_table,
+            'wise_type', uda.wise_type,
+            'district', uda.district,
+            'ac', uda.ac,
+            'pc', uda.pc,
+            'party_jila', uda.party_jila,
+            'data_id', uda.data_id,
+            'block_id', uda.block_id,
+            'gp_ward_id', uda.gp_ward_id,
+            'village_id', uda.village_id,
+            'ac_id', uda.ac_id,
+            'bhag_no', uda.bhag_no,
+            'sec_no', uda.sec_no,
+            'mandal_id', uda.mandal_id,
+            'kendra_id', uda.kendra_id,
+            'created_by', uda.created_by,
+            'updated_by', uda.updated_by,
+            'created_at', uda.created_at,
+            'updated_at', uda.updated_at,
+            'is_active', uda.is_active,
+            'age_from', uda.age_from,
+            'age_to', uda.age_to,
+            'cast_filter', uda.cast_filter
+          )
+          ORDER BY uda.id DESC
+        ) AS data_assignments
+        FROM user_data_assignments uda
+        WHERE uda.user_id = u.id
+      ) udp ON TRUE
+
+      LEFT JOIN LATERAL (
+        SELECT json_agg(
+          json_build_object(
+            'id', up.id,
+            'user_id', up.user_id,
+            'module_id', up.module_id,
+            'action_id', up.action_id,
+            'is_allowed', up.is_allowed,
+            'created_at', up.created_at,
+            'updated_at', up.updated_at
+          )
+          ORDER BY up.id DESC
+        ) AS permissions
+        FROM user_permissions up
+        WHERE up.user_id = u.id
+      ) upp ON TRUE
+
+      ${whereConditions}
+      ORDER BY u.id DESC
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+
+    const dataParams = [...params, limit, offset];
+
+    const countQuery = `
+      SELECT COUNT(*)::int AS total
+      FROM users u
+      ${whereConditions}
+    `;
+
+    const countParams = [...params];
+
+    let [dataResult, countResult] = await Promise.all([
       pool.query(dataQuery, dataParams),
       pool.query(countQuery, countParams),
     ]);
 
+    const parseJSONSafe = (value, fallback = null) => {
+      if (value === null || value === undefined || value === "") return fallback;
+
+      if (typeof value === "object") return value;
+
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        return fallback;
+      }
+    };
+
+    const decryptedRows = dataResult.rows.map((row) => {
+      let decryptedPassword = null;
+
+      try {
+        decryptedPassword = row.password
+          ? decryptPassword(row.password)
+          : null;
+      } catch (err) {
+        console.error(`Password decrypt failed for user ${row.id}:`, err.message);
+        decryptedPassword = null;
+      }
+
+      return {
+        ...row,
+        password: decryptedPassword,
+
+        assigned_modules: parseJSONSafe(row.assigned_modules, []),
+        assigned_sub_modules: parseJSONSafe(row.assigned_sub_modules, []),
+        permissions: parseJSONSafe(row.permissions, []),
+        module_permissions: parseJSONSafe(row.module_permissions, []),
+        assigned_datasets: parseJSONSafe(row.assigned_datasets, []),
+        dataset_access: parseJSONSafe(row.dataset_access, []),
+        data_assignment: parseJSONSafe(row.data_assignment, {}),
+        hierarchical_data_assignment: parseJSONSafe(row.hierarchical_data_assignment, {}),
+        login_access: parseJSONSafe(row.login_access, { web: false, mobile: false }),
+
+        hover_details: {
+          user: {
+            ...parseJSONSafe(row.user_meta, {}),
+            password: decryptedPassword,
+            assigned_modules: parseJSONSafe(row.assigned_modules, []),
+            assigned_sub_modules: parseJSONSafe(row.assigned_sub_modules, []),
+            permissions: parseJSONSafe(row.permissions, []),
+            module_permissions: parseJSONSafe(row.module_permissions, []),
+            assigned_datasets: parseJSONSafe(row.assigned_datasets, []),
+            dataset_access: parseJSONSafe(row.dataset_access, []),
+            data_assignment: parseJSONSafe(row.data_assignment, {}),
+            hierarchical_data_assignment: parseJSONSafe(row.hierarchical_data_assignment, {}),
+            login_access: parseJSONSafe(row.login_access, { web: false, mobile: false }),
+          },
+          user_permissions: parseJSONSafe(row.user_permissions_data, []),
+          user_data_assignments: parseJSONSafe(row.user_data_assignments_data, []),
+        },
+      };
+    });
+
     return {
-      rows: dataResult.rows,
+      rows: decryptedRows,
       total: countResult.rows[0]?.total || 0,
     };
   } catch (error) {
+    console.error("fetchUsers error:", error);
     throw error;
   }
 }
 
-async function bulkUpdateUsers (users, currentUser) {
+async function bulkUpdateUsers(users, currentUser) {
   const client = await pool.connect();
 
-  console.log("🚀 BULK UPDATE START");
-  console.log("👉 users => ", JSON.stringify(users, null, 2));
-  console.log("👉 currentUser => ", currentUser);
-
   const copyUserPermissions = async (targetUserId, sourceUserId) => {
-    console.log("🔁 copyUserPermissions START", { targetUserId, sourceUserId });
 
     await client.query(
       `DELETE FROM user_permissions WHERE user_id = $1`,
       [targetUserId]
     );
-    console.log("🗑️ Deleted old user_permissions for target user:", targetUserId);
 
     const insertPermissionsRes = await client.query(
       `
@@ -291,12 +421,6 @@ async function bulkUpdateUsers (users, currentUser) {
       [targetUserId, sourceUserId]
     );
 
-    console.log(
-      "✅ Copied user_permissions count =>",
-      insertPermissionsRes.rows.length
-    );
-    console.log("✅ Copied user_permissions rows =>", insertPermissionsRes.rows);
-
     return insertPermissionsRes.rows.length;
   };
 
@@ -310,13 +434,11 @@ async function bulkUpdateUsers (users, currentUser) {
       `DELETE FROM user_column_permissions WHERE user_id = $1`,
       [targetUserId]
     );
-    console.log("🗑️ Deleted old user_column_permissions for:", targetUserId);
 
     await client.query(
       `DELETE FROM user_data_assignments WHERE user_id = $1`,
       [targetUserId]
     );
-    console.log("🗑️ Deleted old user_data_assignments for:", targetUserId);
 
     const sourceAssignmentsRes = await client.query(
       `
@@ -328,11 +450,6 @@ async function bulkUpdateUsers (users, currentUser) {
       [sourceUserId]
     );
 
-    console.log(
-      "📚 sourceAssignments count =>",
-      sourceAssignmentsRes.rows.length
-    );
-    console.log("📚 sourceAssignments rows =>", sourceAssignmentsRes.rows);
 
     const assignmentIdMap = {};
 
@@ -402,7 +519,6 @@ async function bulkUpdateUsers (users, currentUser) {
       const newAssignmentId = insertAssignmentRes.rows[0].id;
       assignmentIdMap[item.id] = newAssignmentId;
 
-      console.log(`✅ Assignment copied old=${item.id}, new=${newAssignmentId}`);
     }
 
     const sourceColumnPermissionsRes = await client.query(
@@ -415,26 +531,11 @@ async function bulkUpdateUsers (users, currentUser) {
       [sourceUserId]
     );
 
-    console.log(
-      "📚 sourceColumnPermissions count =>",
-      sourceColumnPermissionsRes.rows.length
-    );
-    console.log(
-      "📚 sourceColumnPermissions rows =>",
-      sourceColumnPermissionsRes.rows
-    );
-
     for (const col of sourceColumnPermissionsRes.rows) {
       const newAssignmentId = col.assignment_id
         ? assignmentIdMap[col.assignment_id] || null
         : null;
 
-      console.log("➕ Copying column permission =>", {
-        old_assignment_id: col.assignment_id,
-        new_assignment_id: newAssignmentId,
-        column_name: col.column_name,
-        db_table: col.db_table,
-      });
 
       await client.query(
         `
@@ -471,37 +572,23 @@ async function bulkUpdateUsers (users, currentUser) {
       );
     }
 
-    console.log("✅ copyAssignmentsAndColumnPermissions DONE", {
-      targetUserId,
-      sourceUserId,
-      assignmentMap: assignmentIdMap,
-    });
-
     return true;
   };
 
   try {
     await client.query("BEGIN");
-    console.log("✅ TRANSACTION STARTED");
 
     const updatedRows = [];
 
     for (const user of users) {
-      console.log("\n==============================");
-      console.log("🔄 Processing user =>", user);
-
       if (!user.id) {
-        console.log("⛔ Skipped: user.id missing");
         continue;
       }
 
       const targetUserId = Number(user.id);
       if (!targetUserId) {
-        console.log("⛔ Invalid target user id =>", user.id);
         continue;
       }
-
-      console.log("🎯 Target User ID =>", targetUserId);
 
       const fields = [];
       const values = [];
@@ -522,43 +609,56 @@ async function bulkUpdateUsers (users, currentUser) {
       if (user.email !== undefined) {
         fields.push(`email = $${index++}`);
         values.push(user.email);
-        console.log("✏️ email =>", user.email);
       }
 
       if (user.mobile !== undefined) {
         fields.push(`mobile_no = $${index++}`);
         values.push(user.mobile);
-        console.log("✏️ mobile_no =>", user.mobile);
       }
 
       if (user.authenticated_email !== undefined) {
         fields.push(`authenticated_email = $${index++}`);
         values.push(user.authenticated_email);
-        console.log("✏️ authenticated_email =>", user.authenticated_email);
       }
 
       if (user.role !== undefined) {
         fields.push(`role = $${index++}`);
         values.push(user.role);
-        console.log("✏️ role =>", user.role);
+      }
+
+      if (user.password !== undefined) {
+        const plainPassword = String(user.password || "").trim();
+        if (plainPassword === "") {
+          throw new Error("Password cannot be empty");
+        }
+        const encryptedPassword = encryptPassword(plainPassword);
+        fields.push(`password = $${index++}`);
+        values.push(encryptedPassword);
       }
 
       if (user.is_active !== undefined) {
         fields.push(`is_active = $${index++}`);
         values.push(user.is_active);
-        console.log("✏️ is_active =>", user.is_active);
+      }
+
+      if (user.login_access !== undefined) {
+        fields.push(`login_access = $${index++}::jsonb`);
+        values.push(
+          JSON.stringify({
+            web: !!user.login_access?.web,
+            mobile: !!user.login_access?.mobile,
+          })
+        );
       }
 
       if (user.parent_id !== undefined) {
         fields.push(`parent_id = $${index++}`);
         values.push(user.parent_id || null);
-        console.log("✏️ parent_id =>", user.parent_id || null);
       }
 
       if (user.team_id !== undefined) {
         fields.push(`team_id = $${index++}`);
         values.push(user.team_id || null);
-        console.log("✏️ team_id =>", user.team_id || null);
       }
 
       if (user.permissions !== undefined) {
@@ -568,7 +668,6 @@ async function bulkUpdateUsers (users, currentUser) {
             ? JSON.stringify(user.permissions)
             : user.permissions
         );
-        console.log("✏️ permissions direct update");
       }
 
       if (user.assignedModules !== undefined) {
@@ -578,7 +677,6 @@ async function bulkUpdateUsers (users, currentUser) {
             ? JSON.stringify(user.assignedModules)
             : user.assignedModules
         );
-        console.log("✏️ assigned_modules direct update");
       }
 
       if (user.assignedSubModules !== undefined) {
@@ -588,7 +686,6 @@ async function bulkUpdateUsers (users, currentUser) {
             ? JSON.stringify(user.assignedSubModules)
             : user.assignedSubModules
         );
-        console.log("✏️ assigned_sub_modules direct update");
       }
 
       if (user.assignedDatasets !== undefined) {
@@ -598,7 +695,6 @@ async function bulkUpdateUsers (users, currentUser) {
             ? JSON.stringify(user.assignedDatasets)
             : user.assignedDatasets
         );
-        console.log("✏️ assigned_datasets direct update");
       }
 
       // -----------------------------
@@ -606,8 +702,6 @@ async function bulkUpdateUsers (users, currentUser) {
       // -----------------------------
       if (user.modules_code !== undefined && String(user.modules_code).trim() !== "") {
         const sourceModuleCode = String(user.modules_code).trim();
-
-        console.log("📦 Module code copy requested from =>", sourceModuleCode);
 
         const moduleSourceRes = await client.query(
           `
@@ -626,16 +720,12 @@ async function bulkUpdateUsers (users, currentUser) {
           [sourceModuleCode, targetUserId]
         );
 
-        console.log("🔍 moduleSourceRes.rows =>", moduleSourceRes.rows);
-
         if (!moduleSourceRes.rows.length) {
           throw new Error(`Invalid modules_code: ${sourceModuleCode}`);
         }
 
         const sourceUser = moduleSourceRes.rows[0];
         moduleSourceUserId = sourceUser.id;
-
-        console.log("✅ Module source user found =>", sourceUser);
 
         fields.push(`modules_code = $${index++}`);
         values.push(sourceUser.modules_code || sourceModuleCode);
@@ -682,8 +772,6 @@ async function bulkUpdateUsers (users, currentUser) {
       ) {
         const sourcePermissionCode = String(user.permission_code).trim();
 
-        console.log("🔐 Permission code copy requested from =>", sourcePermissionCode);
-
         const permissionSourceRes = await client.query(
           `
           SELECT
@@ -707,8 +795,6 @@ async function bulkUpdateUsers (users, currentUser) {
         const sourceUser = permissionSourceRes.rows[0];
         permissionSourceUserId = sourceUser.id;
 
-        console.log("✅ Permission source user found =>", sourceUser);
-
         fields.push(`permission_code = $${index++}`);
         values.push(sourceUser.permission_code || sourcePermissionCode);
 
@@ -728,7 +814,6 @@ async function bulkUpdateUsers (users, currentUser) {
       }
 
       if (!fields.length) {
-        console.log("⛔ No fields to update for user:", targetUserId);
         continue;
       }
 
@@ -761,6 +846,7 @@ async function bulkUpdateUsers (users, currentUser) {
           is_active,
           parent_id,
           team_id,
+          login_access,
           modules_code,
           permission_code,
           permissions,
@@ -771,16 +857,9 @@ async function bulkUpdateUsers (users, currentUser) {
           updated_at
       `;
 
-      console.log("📤 updateQuery =>", updateQuery);
-      console.log("📦 update values =>", [...values, ...permissionParams]);
-
       const { rows } = await client.query(updateQuery, [...values, ...permissionParams]);
 
-      console.log("📥 Update Result rows.length =>", rows.length);
-      console.log("📥 Update Result rows =>", rows);
-
       if (!rows.length) {
-        console.log("⚠️ No user row updated, skipping table copy for:", targetUserId);
         continue;
       }
 
@@ -788,39 +867,19 @@ async function bulkUpdateUsers (users, currentUser) {
       // If module code applied => copy all related tables
       // -----------------------------------------
       if (moduleSourceUserId) {
-        console.log("🚚 MODULE FLOW COPY START", {
-          targetUserId,
-          moduleSourceUserId,
-        });
-
         await copyUserPermissions(targetUserId, moduleSourceUserId);
         await copyAssignmentsAndColumnPermissions(targetUserId, moduleSourceUserId);
-
-        console.log("✅ MODULE FLOW COPY DONE", {
-          targetUserId,
-          moduleSourceUserId,
-        });
       }
 
       // -----------------------------------------
       // If permission code applied => override/copy all related tables
       // -----------------------------------------
       if (permissionSourceUserId) {
-        console.log("🚚 PERMISSION FLOW COPY START", {
-          targetUserId,
-          permissionSourceUserId,
-        });
-
         await copyUserPermissions(targetUserId, permissionSourceUserId);
         await copyAssignmentsAndColumnPermissions(
           targetUserId,
           permissionSourceUserId
         );
-
-        console.log("✅ PERMISSION FLOW COPY DONE", {
-          targetUserId,
-          permissionSourceUserId,
-        });
       }
 
       // -----------------------------------------
@@ -830,38 +889,21 @@ async function bulkUpdateUsers (users, currentUser) {
         `SELECT * FROM user_permissions WHERE user_id = $1 ORDER BY id ASC`,
         [targetUserId]
       );
-      console.log(
-        "🔍 verify user_permissions =>",
-        verifyUserPermissions.rows.length,
-        verifyUserPermissions.rows
-      );
 
       const verifyAssignments = await client.query(
         `SELECT * FROM user_data_assignments WHERE user_id = $1 ORDER BY id ASC`,
         [targetUserId]
-      );
-      console.log(
-        "🔍 verify user_data_assignments =>",
-        verifyAssignments.rows.length,
-        verifyAssignments.rows
       );
 
       const verifyColumns = await client.query(
         `SELECT * FROM user_column_permissions WHERE user_id = $1 ORDER BY id ASC`,
         [targetUserId]
       );
-      console.log(
-        "🔍 verify user_column_permissions =>",
-        verifyColumns.rows.length,
-        verifyColumns.rows
-      );
 
       updatedRows.push(rows[0]);
-      console.log("✅ User Updated Successfully =>", targetUserId);
     }
 
     await client.query("COMMIT");
-    console.log("✅ TRANSACTION COMMITTED");
 
     return updatedRows;
   } catch (error) {
@@ -989,8 +1031,18 @@ const getAllModulesCode = async () => {
   }
 };
 
-async function getUserDetails(userId) {
+async function getUserDetails(userId, currentUser) {
   try {
+    const isCurrentUserSuperAdmin = currentUser?.role === "super_admin";
+
+    let whereClause = `WHERE u.id = $1`;
+    const params = [userId];
+
+    if (!isCurrentUserSuperAdmin) {
+      whereClause += ` AND u.role <> $2`;
+      params.push("super_admin");
+    }
+
     const query = `
       SELECT
         u.id,
@@ -1036,15 +1088,14 @@ async function getUserDetails(userId) {
 
         cb.username AS created_by_username,
         p.username AS parent_username
-
       FROM users u
       LEFT JOIN users cb ON cb.id = u.created_by
       LEFT JOIN users p ON p.id = u.parent_id
-      WHERE u.id = $1
+      ${whereClause}
       LIMIT 1
     `;
 
-    const result = await pool.query(query, [userId]);
+    const result = await pool.query(query, params);
 
     if (!result.rows.length) return null;
 
@@ -1064,29 +1115,22 @@ async function getUserDetails(userId) {
       }
     };
 
-    const teamIds = row.team_id
-      ? String(row.team_id)
-        .split(",")
-        .map((id) => Number(id.trim()))
-        .filter(Boolean)
-      : [];
+    let decryptedPassword = "";
 
-    let teams = [];
-    if (teamIds.length > 0) {
-      const teamQuery = `
-        SELECT id, name, team_code
-        FROM teams
-        WHERE id = ANY($1::int[])
-        ORDER BY id ASC
-      `;
-      const teamResult = await pool.query(teamQuery, [teamIds]);
-      teams = teamResult.rows || [];
+    if (row.password) {
+      try {
+        decryptedPassword = decryptPassword(row.password);
+      } catch (error) {
+        console.error("❌ Password decrypt error:", error.message);
+        decryptedPassword = "";
+      }
     }
 
     const childQuery = `
       SELECT id, username, email, mobile_no, role, is_active
       FROM users
       WHERE parent_id = $1
+      ${!isCurrentUserSuperAdmin ? `AND role <> 'super_admin'` : ""}
       ORDER BY id ASC
     `;
     const childResult = await pool.query(childQuery, [userId]);
@@ -1097,6 +1141,7 @@ async function getUserDetails(userId) {
       email: row.email || "",
       authenticated_email: row.authenticated_email || "",
       mobile_no: row.mobile_no || "",
+      password: decryptedPassword,
       role: row.role || "",
       permissions: parseJSON(row.permissions, []),
       module_permissions: parseJSON(row.module_permissions, []),
@@ -1118,7 +1163,6 @@ async function getUserDetails(userId) {
         }
         : null,
       team_id: row.team_id || "",
-      teams,
       last_device_info: parseJSON(row.last_device_info, {}),
       assignedDatasets: parseJSON(row.assigned_datasets, []),
       datasetAccess: parseJSON(row.dataset_access, []),
@@ -1167,7 +1211,7 @@ async function fetchTeams() {
 async function getUserById(id) {
   try {
     const { rows } = await pool.query(
-      "SELECT * FROM users WHERE id = $1",
+      "SELECT username FROM users WHERE id = $1",
       [id]
     );
     return rows[0] || null;
@@ -1184,11 +1228,20 @@ async function updateUserById(id, data) {
     let index = 1;
 
     for (const key in data) {
+      let value = data[key];
+      if (key === "password") {
+        const plainPassword = String(value || "").trim();
+        if (!plainPassword) {
+          throw new Error("Password cannot be empty");
+        }
+        value = encryptPassword(plainPassword);
+      }
+
       fields.push(`${key} = $${index}`);
       values.push(
-        Array.isArray(data[key]) || typeof data[key] === "object"
-          ? JSON.stringify(data[key])
-          : data[key]
+        Array.isArray(value) || typeof value === "object"
+          ? JSON.stringify(value)
+          : value
       );
       index++;
     }
@@ -1201,7 +1254,6 @@ async function updateUserById(id, data) {
       WHERE id = $${index}
       RETURNING *;
     `;
-
     const { rows } = await pool.query(query, values);
     return rows[0] || null;
   } catch (error) {
@@ -1210,59 +1262,31 @@ async function updateUserById(id, data) {
   }
 }
 
-// async function generateModulesCode(
-//   modules = [],
-//   datasets = [],
-//   subModules = [],
-//   navbarPages = [],
-//   userId
-// ) {
-//   try {
-//     const payload = {
-//       assignedModules: [...modules].sort(),
-//       assignedDatasets: [...datasets].sort(),
-//       assignedSubModules: [...subModules].sort(),
-//       assignedNavbarPages: [...navbarPages].sort(),
-//     };
-
-//     const payloadStr = JSON.stringify(payload);
-
-//     const existing = await pool.query(
-//       "SELECT code FROM modules_codes WHERE payload = $1",
-//       [payloadStr]
-//     );
-
-//     if (existing.rows.length > 0) {
-//       return existing.rows[0].code;
-//     }
-
-//     const code = crypto
-//       .randomBytes(5)
-//       .toString("hex")
-//       .toUpperCase();
-
-//     await pool.query(
-//       `INSERT INTO modules_codes (code, payload, created_by)
-//        VALUES ($1, $2, $3)`,
-//       [code, payloadStr, userId]
-//     );
-
-//     return code;
-//   } catch (error) {
-//     console.error("generateModulesCode error:", error);
-//     throw error;
-//   }
-// }
-
-async function deleteUserById(id) {
+async function getUsersByIds(ids) {
   try {
-    await pool.query(
-      "DELETE FROM users WHERE id = $1",
-      [id]
+    const result = await pool.query(
+      `SELECT id, username, email, role
+       FROM users
+       WHERE id = ANY($1::int[])`,
+      [ids]
     );
-    return true;
+    return result.rows;
   } catch (error) {
-    console.error("deleteUserById error:", error);
+    console.error("getUsersByIds error:", error);
+    throw error;
+  }
+}
+
+async function deleteUsersByIds(ids) {
+  try {
+    const result = await pool.query(
+      `DELETE FROM users
+       WHERE id = ANY($1::int[])`,
+      [ids]
+    );
+    return result.rowCount || 0;
+  } catch (error) {
+    console.error("deleteUsersByIds error:", error);
     throw error;
   }
 }
@@ -1397,132 +1421,6 @@ async function getPermissionModules() {
     throw error;
   }
 }
-
-// async function assignUserPermissions({
-//   user_id,
-//   permissions,
-//   created_by = null,
-//   permission_set_name = null,
-//   description = null,
-// }) {
-//   const client = await pool.connect();
-
-//   try {
-//     await client.query("BEGIN");
-
-//     if (!user_id) {
-//       throw new Error("user_id is required");
-//     }
-
-//     if (!Array.isArray(permissions)) {
-//       throw new Error("permissions must be an array");
-//     }
-
-//     const userCheck = await client.query(
-//       `SELECT id FROM users WHERE id = $1`,
-//       [user_id]
-//     );
-
-//     if (!userCheck.rows.length) {
-//       throw new Error("User not found");
-//     }
-
-//     // 1. remove old user permissions
-//     await client.query(
-//       `DELETE FROM user_permissions WHERE user_id = $1`,
-//       [user_id]
-//     );
-
-//     // 2. create new permission set
-//     const permissionSetRes = await client.query(
-//       `INSERT INTO permission_sets (name, description, created_by, created_at, updated_at)
-//          VALUES ($1, $2, $3, NOW(), NOW())
-//          RETURNING id, code, name, description, created_by, created_at`,
-//       [
-//         permission_set_name || generatePermissionSetName(user_id),
-//         description,
-//         created_by,
-//       ]
-//     );
-
-//     const permissionSet = permissionSetRes.rows[0];
-//     const permissionSetId = permissionSet.id;
-
-//     // 3. save permissions into user_permissions + permission_set_items
-//     for (const perm of permissions) {
-//       if (!perm.module_code || !Array.isArray(perm.actions)) continue;
-
-//       const moduleRes = await client.query(
-//         `SELECT id, code, name
-//            FROM permission_modules
-//            WHERE code = $1`,
-//         [perm.module_code]
-//       );
-
-//       if (!moduleRes.rows.length) continue;
-
-//       const moduleId = moduleRes.rows[0].id;
-
-//       for (const actionCode of perm.actions) {
-//         const actionRes = await client.query(
-//           `SELECT id, code, name
-//              FROM permission_actions
-//              WHERE code = $1`,
-//           [actionCode]
-//         );
-
-//         if (!actionRes.rows.length) continue;
-
-//         const actionId = actionRes.rows[0].id;
-
-//         await client.query(
-//           `INSERT INTO user_permissions
-//              (user_id, module_id, action_id, is_allowed, created_at, updated_at)
-//              VALUES ($1, $2, $3, TRUE, NOW(), NOW())
-//              ON CONFLICT (user_id, module_id, action_id)
-//              DO UPDATE SET
-//                is_allowed = EXCLUDED.is_allowed,
-//                updated_at = NOW()`,
-//           [user_id, moduleId, actionId]
-//         );
-
-//         await client.query(
-//           `INSERT INTO permission_set_items
-//              (permission_set_id, module_id, action_id, is_allowed, created_at)
-//              VALUES ($1, $2, $3, TRUE, NOW())
-//              ON CONFLICT (permission_set_id, module_id, action_id)
-//              DO UPDATE SET
-//                is_allowed = EXCLUDED.is_allowed`,
-//           [permissionSetId, moduleId, actionId]
-//         );
-//       }
-//     }
-
-//     // 4. update user with permission set references
-//     await client.query(
-//       `UPDATE users
-//          SET permission_set_id = $1,
-//              permission_code = $1,
-//              updated_at = NOW()
-//          WHERE id = $2`,
-//       [permissionSetId, user_id]
-//     );
-
-//     await client.query("COMMIT");
-
-//     return {
-//       user_id,
-//       permission_set_id: permissionSetId,
-//       permission_code: permissionSetId,
-//       permission_set: permissionSet,
-//     };
-//   } catch (error) {
-//     await client.query("ROLLBACK");
-//     throw error;
-//   } finally {
-//     client.release();
-//   }
-// }
 
 async function applyPermissionSetToUser({
   user_id,
@@ -2067,9 +1965,204 @@ async function getAssignableData(data) {
 
 }
 
+async function unlinkUser(params) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const userId = Number(params?.id || params?.user_id);
+
+    if (!userId || Number.isNaN(userId)) {
+      await client.query("ROLLBACK");
+      return {
+        success: false,
+        message: "Valid user id is required",
+      };
+    }
+
+    const userRes = await client.query(
+      `
+      SELECT
+        id,
+        email,
+        authenticated_email,
+        mobile_no,
+        token
+      FROM users
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [userId]
+    );
+
+    if (userRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return {
+        success: false,
+        message: "User not found",
+      };
+    }
+
+    const user = userRes.rows[0];
+
+    // get all currently active sessions first
+    const activeSessionsRes = await client.query(
+      `
+      SELECT
+        id,
+        session_token,
+        platform,
+        device_type,
+        device_id,
+        generated_device_id,
+        device_name,
+        browser,
+        os,
+        ip_address,
+        user_agent,
+        personal_email,
+        authenticated_email,
+        fingerprint_hash
+      FROM user_sessions
+      WHERE user_id = $1
+        AND is_active = true
+        AND COALESCE(is_logged_out, false) = false
+      `,
+      [userId]
+    );
+
+    const activeSessions = activeSessionsRes.rows;
+
+    // logout all active sessions
+    const sessionUpdateRes = await client.query(
+      `
+      UPDATE user_sessions
+      SET
+        is_active = false,
+        is_logged_out = true,
+        logout_reason = 'USER_UNLINKED_BY_ADMIN',
+        logged_out_at = NOW(),
+        updated_at = NOW(),
+        expires_at = NOW()
+      WHERE user_id = $1
+        AND is_active = true
+        AND COALESCE(is_logged_out, false) = false
+      `,
+      [userId]
+    );
+
+    let revokedDevices = 0;
+
+    // revoke trusted device records for the same active devices
+    for (const session of activeSessions) {
+      if (!session.generated_device_id || !session.platform) {
+        continue;
+      }
+
+      const revokeDeviceRes = await client.query(
+        `
+        UPDATE user_verified_devices
+        SET
+          is_verified = false,
+          is_revoked = true,
+          revoked_at = NOW(),
+          revoked_reason = 'USER_UNLINKED_BY_ADMIN',
+          verification_status = 'REVOKED',
+          updated_at = NOW()
+        WHERE user_id = $1
+          AND generated_device_id = $2
+          AND platform = $3
+          AND COALESCE(is_revoked, false) = false
+        `,
+        [userId, session.generated_device_id, session.platform]
+      );
+
+      revokedDevices += revokeDeviceRes.rowCount;
+
+      await client.query(
+        `
+        INSERT INTO user_session_logs (
+          user_id,
+          session_token,
+          event_type,
+          platform,
+          device_id,
+          device_name,
+          browser,
+          os,
+          ip_address,
+          user_agent,
+          personal_email,
+          authenticated_email,
+          message,
+          meta_data,
+          created_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()
+        )
+        `,
+        [
+          userId,
+          session.session_token,
+          "DEVICE_UNVERIFIED_BY_ADMIN",
+          session.platform || null,
+          session.generated_device_id || session.device_id || null,
+          session.device_name || null,
+          session.browser || null,
+          session.os || null,
+          session.ip_address || null,
+          session.user_agent || null,
+          session.personal_email || user.email || null,
+          session.authenticated_email || user.authenticated_email || null,
+          "User was unlinked by admin. Session expired and trusted device revoked.",
+          JSON.stringify({
+            reason: "USER_UNLINKED_BY_ADMIN",
+            session_id: session.id,
+            session_token: session.session_token,
+            platform: session.platform || null,
+            device_type: session.device_type || null,
+            device_id: session.device_id || null,
+            generated_device_id: session.generated_device_id || null,
+            fingerprint_hash: session.fingerprint_hash || null,
+            action: "UNLINK_USER_AND_REVOKE_DEVICE",
+            next_login_requires_device_otp: true,
+          }),
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return {
+      success: true,
+      message: "User unlinked successfully",
+      data: {
+        expired_sessions: sessionUpdateRes.rowCount,
+        revoked_devices: revokedDevices,
+      },
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("unlinkUser error:", error);
+    return {
+      success: false,
+      message: "Failed to unlink user",
+      error: error.message,
+    };
+  } finally {
+    client.release();
+  }
+}
+
 
 
 module.exports = {
+  unlinkUser,
+  getAssignmentColumnPermissions,
+  getUsersByIds,
+  deleteUsersByIds,
   getAdminData,
   insertLoginHistory,
   getAllModulesCode,
@@ -2080,7 +2173,6 @@ module.exports = {
   generateModulesCode,
   updateUserById,
   getUserById,
-  deleteUserById,
   updateUserPasswordById,
   getProfileModel,
   getPermissionModules,

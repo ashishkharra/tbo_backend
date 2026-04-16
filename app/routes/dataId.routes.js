@@ -77,6 +77,18 @@ router.get(
   dataIdController.getAdvancedVotersList
 );
 
+router.get(
+  "/voters/castid-lookup",
+  authenticateToken,
+  dataIdController.getCastIdLookup
+);
+
+router.get(
+  "/voters/castid-surname-lookup",
+  authenticateToken,
+  dataIdController.getCastSurnameLookup
+);
+
 // voter list update / save
 router.patch(
   '/update',
@@ -146,7 +158,7 @@ router.get(
 
 router.get(
   "/download-eroll-mapping-excel",
-  [authenticateToken, requireModulePermission('', 'download')],
+  [authenticateToken, requireModulePermission('voter_list_booth_mapping', 'download')],
   dataIdController.downloadErollMappingExcel
 );
 
@@ -302,9 +314,45 @@ router.post(
 router.post(
   '/sync/surname',
   [
-    authenticateToken
+    authenticateToken, requireModulePermission('voter_list_import_export', 'read')
   ],
   dataIdController.syncSurname
+)
+
+router.post(
+  "/surname/list",
+  [
+    authenticateToken,
+    // requireModulePermission("voter_list_import_export", "read"),
+  ],
+  dataIdController.getSurnameList
+);
+
+router.post(
+  "/sync/delete/data_id",
+  [
+    authenticateToken,
+    requireModulePermission('voter_list_main', 'update')
+  ],
+  dataIdController.syncDeleteDataId
+)
+
+router.patch(
+  "/inactive/data_id",
+  [
+    authenticateToken,
+    requireModulePermission('voter_list_main', 'update')
+  ],
+  dataIdController.inactivateDataId
+)
+
+router.post(
+  "/count",
+  [
+    authenticateToken,
+    requireModulePermission('voter_list_main', 'update')
+  ],
+  dataIdController.getCountsByDataIdsController
 )
 
 module.exports = router;

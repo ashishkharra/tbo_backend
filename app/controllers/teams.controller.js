@@ -8,11 +8,45 @@ const {
   getMembersByParentId,
   countMembersByParentId,
   removeParentRelationship,
-  syncPermissionsFromParent
+  syncPermissionsFromParent,
+  addParentChildLink,
+  removeParentChildLink,
+  getDirectChildren,
+  getDirectParents,
+  getAllChildren,
+  getAllParents,
+  getEffectivePermissions,
+  getEffectivePermissionsGrouped,
+  refreshTeams,
+  getTeams,
+  getUsersRoles
 } = require('../models/team.model.js');
 
 
 module.exports = {
+
+  getUsersRoles: async (req, res) => {
+    try {
+      const result = await getUsersRoles(req.user, {
+        search: req.query.search || "",
+        role: req.query.role || "",
+        limit: req.query.limit || 50,
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Users roles fetched successfully",
+        data: result,
+      });
+    } catch (error) {
+      console.error("getUsersRoles error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch users roles",
+        error: error.message,
+      });
+    }
+  },
 
   addParentToUser: async (req, res) => {
     try {
@@ -174,6 +208,115 @@ module.exports = {
         message: "Failed to remove parent relationship"
       });
     }
-  }
+  },
+
+  addParentChild: async (req, res) => {
+    try {
+      const result = await addParentChildLink(req.body);
+
+      if (!result.success) {
+        return res.status(400).json(result);
+      }
+
+      return res.status(200).json(result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error"
+      });
+    }
+  },
+
+  removeParentChild: async (req, res) => {
+    try {
+      const result = await removeParentChildLink(req.body);
+
+      if (!result.success) {
+        return res.status(400).json(result);
+      }
+
+      return res.status(200).json(result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error"
+      });
+    }
+  },
+
+  getChildren: async (req, res) => {
+    try {
+      const { user_id, recursive } = req.query;
+
+      const result = String(recursive) === "true"
+        ? await getAllChildren(user_id)
+        : await getDirectChildren(user_id);
+
+      return res.status(result.success ? 200 : 400).json(result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error"
+      });
+    }
+  },
+
+  getParents: async (req, res) => {
+    try {
+      const { user_id, recursive } = req.query;
+
+      const result = String(recursive) === "true"
+        ? await getAllParents(user_id)
+        : await getDirectParents(user_id);
+
+      return res.status(result.success ? 200 : 400).json(result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error"
+      });
+    }
+  },
+
+  getEffectivePermissions: async (req, res) => {
+    try {
+      const { user_id, grouped } = req.query;
+
+      const result = String(grouped) === "true"
+        ? await getEffectivePermissionsGrouped(user_id)
+        : await getEffectivePermissions(user_id);
+
+      return res.status(result.success ? 200 : 400).json(result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error"
+      });
+    }
+  },
+
+  refreshTeams: async (req, res) => {
+    try {
+      const result = await refreshTeams();
+      return res.status(result.success ? 200 : 400).json(result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error"
+      });
+    }
+  },
+
+  getTeams: async (req, res) => {
+    try {
+      const result = await getTeams(req.query);
+      return res.status(result.success ? 200 : 400).json(result);
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Internal server error"
+      });
+    }
+  },
 
 };

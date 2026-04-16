@@ -1,8 +1,82 @@
 const { pool } = require('../config/config');
-
+const crypto = require('crypto');
+const XLSX = require("xlsx");
+const path = require("path");
+const fs = require("fs");
+const multer = require('multer')
+const fastJson = require('fast-json-stringify');
+const { v4: uuidv4 } = require("uuid");
+const csv = require("csv-parser");
+const { Readable } = require("stream");
+const { ENC_KEY } = require('../config/global');
 const csvCache = new Map();
 const mergedPermissionCache = new Map();
 
+const buff_key = Buffer.from(ENC_KEY, "hex");
+
+const votersResponseSchema = fastJson({
+  type: "object",
+  properties: {
+    success: { type: "boolean" },
+
+    mapping: {
+      type: "object",
+      additionalProperties: true
+    },
+
+    metadata: {
+      type: "object",
+      properties: {
+        totalRecords: { type: "number" },
+        currentPage: { type: "number" },
+        totalPages: { type: "number" }
+      },
+      additionalProperties: true
+    },
+
+    voters: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: true
+      }
+    }
+  },
+  additionalProperties: true
+});
+
+function encryptPassword(plainText) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", buff_key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(String(plainText), "utf8"),
+    cipher.final()
+  ]);
+
+  return JSON.stringify({
+    iv: iv.toString("hex"),
+    content: encrypted.toString("hex"),
+    tag: cipher.getAuthTag().toString("hex"),
+  });
+}
+
+function decryptPassword(payload) {
+  const encryptedData =
+    typeof payload === "string"
+      ? JSON.parse(payload)
+      : payload;
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    buff_key,
+    Buffer.from(encryptedData.iv, "hex")
+  );
+  decipher.setAuthTag(Buffer.from(encryptedData.tag, "hex"));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(encryptedData.content, "hex")),
+    decipher.final()
+  ]);
+  return decrypted.toString("utf8");
+}
 
 function splitCsv(value) {
   if (value === null || value === undefined || value === '') return [];
@@ -668,7 +742,619 @@ function doesRowMatchAssignment(row, assignment) {
   }
 }
 
+const formatDateReadable = (date) => {
+  if (!date) return null;
+
+  const d = new Date(date);
+  const now = new Date();
+
+  const isToday =
+    d.getDate() === now.getDate() &&
+    d.getMonth() === now.getMonth() &&
+    d.getFullYear() === now.getFullYear();
+
+  const yesterday = new Date();
+  yesterday.setDate(now.getDate() - 1);
+
+  const isYesterday =
+    d.getDate() === yesterday.getDate() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getFullYear() === yesterday.getFullYear();
+
+  if (isToday) return "Today";
+  if (isYesterday) return "Yesterday";
+
+  return d.toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+};
+
+const ALLOWED_COLUMNS = new Set([
+  "data_id_name_hi",
+  "data_id_name_en",
+  "ac_name_hi",
+  "ac_name_en",
+]);
+
+const tableConfig = {
+  dataid_importmaster: {
+    filters: ["data_id", "is_active"],
+    searchColumns: [
+      "ac_name_hi",
+      "ac_name_en",
+      "pc_name_hi",
+      "pc_name_en",
+      "district_en",
+      "district_hi",
+      "party_district_hi",
+      "party_district_en",
+      "div_name_hi",
+      "div_name_en"
+    ],
+    orderBy: "data_id"
+  },
+
+  eroll_castmaster: {
+    filters: ["data_id"],
+    searchColumns: [
+      "religion_en",
+      "religion_hi",
+      "castcat_en",
+      "castcat_hi",
+      "castida_en",
+      "castida_hi"
+    ],
+    orderBy: "data_id"
+  },
+
+  eroll_dropdown: {
+    filters: ["data_id", "dropdown_name"],
+    searchColumns: ["value_hi", "value_en"],
+    orderBy: "dropdown_id"
+  },
+
+  eroll_yojna_master: {
+    filters: ["data_id", "reg_name"],
+    searchColumns: ["yojna_name"],
+    orderBy: "yojna_id"
+  }
+};
+
+const insertTableConfig = {
+  dataid_importmaster: {
+    columns: [
+      "data_id",
+      "data_id_name_hi",
+      "data_id_name_en",
+      "ac_no",
+      "ac_name_en",
+      "ac_name_hi",
+      "pc_no",
+      "pc_name_en",
+      "pc_name_hi",
+      "district_id",
+      "district_en",
+      "district_hi",
+      "party_district_id",
+      "party_district_hi",
+      "party_district_en",
+      "div_id",
+      "div_name_en",
+      "div_name_hi",
+      "data_range",
+      "is_active",
+      "updated_at"
+    ],
+    required: ["data_id"],
+    defaults: {
+      ac_no: 0,
+      pc_no: 0,
+      district_id: 0,
+      party_district_id: 0,
+      div_id: 0,
+      is_active: 1
+    }
+  },
+
+  eroll_castmaster: {
+    columns: [
+      "rid",
+      "religion_en",
+      "religion_hi",
+      "catid",
+      "castcat_en",
+      "castcat_hi",
+      "castid",
+      "castida_en",
+      "castida_hi",
+      "data_id"
+    ],
+    required: ["data_id"],
+    defaults: {}
+  },
+
+  eroll_dropdown: {
+    columns: [
+      "dropdown_id",
+      "dropdown_name",
+      "value_hi",
+      "value_en",
+      "data_id",
+      "value_id"
+    ],
+    required: ["data_id"],
+    defaults: {}
+  },
+
+  eroll_yojna_master: {
+    columns: [
+      "yojna_name",
+      "regid",
+      "reg_name",
+      "data_id",
+      "is_active",
+      "updated_at",
+      "yojna_id"
+    ],
+    required: ["data_id"],
+    defaults: {
+      is_active: 1
+    }
+  }
+};
+
+const deleteTableConfig = {
+  dataid_importmaster: true,
+  eroll_castmaster: true,
+  eroll_dropdown: true,
+  eroll_yojna_master: true,
+};
+
+const patchTableConfig = {
+  dataid_importmaster: [
+    "data_id",
+    "data_id_name_hi",
+    "data_id_name_en",
+    "ac_no",
+    "ac_name_en",
+    "ac_name_hi",
+    "pc_no",
+    "pc_name_en",
+    "pc_name_hi",
+    "district_id",
+    "district_en",
+    "district_hi",
+    "party_district_id",
+    "party_district_hi",
+    "party_district_en",
+    "div_id",
+    "div_name_en",
+    "div_name_hi",
+    "data_range",
+    "is_active"
+  ],
+
+  eroll_castmaster: [
+    "rid",
+    "religion_en",
+    "religion_hi",
+    "catid",
+    "castcat_en",
+    "castcat_hi",
+    "castid",
+    "castida_en",
+    "castida_hi",
+    "data_id"
+  ],
+
+  eroll_dropdown: [
+    "dropdown_id",
+    "dropdown_name",
+    "value_hi",
+    "value_en",
+    "data_id",
+    "value_id"
+  ],
+
+  eroll_yojna_master: [
+    "yojna_name",
+    "regid",
+    "reg_name",
+    "data_id",
+    "is_active",
+    "updated_at",
+    "yojna_id"
+  ]
+};
+
+const downloadTableConfig = {
+  dataid_importmaster: {
+    sheetName: "ImportMaster",
+    query: ({ whereClause }) => `
+      SELECT
+        id AS "ID",
+        data_id AS "DATA_ID",
+        data_id_name_hi AS "DATA_ID_NAME_HI",
+        data_id_name_en AS "DATA_ID_NAME_EN",
+        ac_no AS "AC_NO",
+        ac_name_en AS "AC_NAME_EN",
+        ac_name_hi AS "AC_NAME_HI",
+        pc_no AS "PC_NO",
+        pc_name_en AS "PC_NAME_EN",
+        pc_name_hi AS "PC_NAME_HI",
+        district_id AS "DISTRICT_ID",
+        district_en AS "DISTRICT_EN",
+        district_hi AS "DISTRICT_HI",
+        party_district_id AS "PARTY_DISTRICT_ID",
+        party_district_hi AS "PARTY_DISTRICT_HI",
+        party_district_en AS "PARTY_DISTRICT_EN",
+        div_id AS "DIV_ID",
+        div_name_en AS "DIV_NAME_EN",
+        div_name_hi AS "DIV_NAME_HI",
+        CASE
+          WHEN data_range IS NOT NULL THEN data_range::text
+          ELSE ''
+        END AS "DATA_RANGE",
+        is_active AS "IS_ACTIVE",
+        updated_at AS "UPDATED_AT"
+      FROM dataid_importmaster
+      ${whereClause}
+      ORDER BY id DESC
+    `
+  },
+
+  eroll_castmaster: {
+    sheetName: "CastMaster",
+    query: ({ whereClause }) => `
+      SELECT
+        id AS "ID",
+        rid AS "RID",
+        religion_en AS "RELIGION_EN",
+        religion_hi AS "RELIGION_HI",
+        catid AS "CATID",
+        castcat_en AS "CASTCAT_EN",
+        castcat_hi AS "CASTCAT_HI",
+        castid AS "CASTID",
+        castida_en AS "CASTIDA_EN",
+        castida_hi AS "CASTIDA_HI",
+        data_id AS "DATA_ID"
+      FROM eroll_castmaster
+      ${whereClause}
+      ORDER BY id DESC
+    `
+  },
+
+  eroll_dropdown: {
+    sheetName: "DropdownMaster",
+    query: ({ whereClause }) => `
+      SELECT
+        id AS "ID",
+        dropdown_id AS "DROPDOWN_ID",
+        dropdown_name AS "DROPDOWN_NAME",
+        value_hi AS "VALUE_HI",
+        value_en AS "VALUE_EN",
+        data_id AS "DATA_ID",
+        value_id AS "VALUE_ID"
+      FROM eroll_dropdown
+      ${whereClause}
+      ORDER BY id DESC
+    `
+  },
+
+  eroll_yojna_master: {
+    sheetName: "YojnaMaster",
+    query: ({ whereClause }) => `
+      SELECT
+        id AS "ID",
+        yojna_name AS "YOJNA_NAME",
+        regid AS "REGID",
+        reg_name AS "REG_NAME",
+        data_id AS "DATA_ID",
+        is_active AS "IS_ACTIVE",
+        updated_at AS "UPDATED_AT",
+        yojna_id AS "YOJNA_ID"
+      FROM eroll_yojna_master
+      ${whereClause}
+      ORDER BY id DESC
+    `
+  }
+};
+
+const importCsvTableConfig = {
+  dataid_importmaster: {
+    tableName: "dataid_importmaster",
+    sheetColumns: {
+      DATA_ID: "data_id",
+      DATA_ID_NAME_HI: "data_id_name_hi",
+      DATA_ID_NAME_EN: "data_id_name_en",
+      AC_NO: "ac_no",
+      AC_NAME_EN: "ac_name_en",
+      AC_NAME_HI: "ac_name_hi",
+      PC_NO: "pc_no",
+      PC_NAME_EN: "pc_name_en",
+      PC_NAME_HI: "pc_name_hi",
+      DISTRICT_ID: "district_id",
+      DISTRICT_EN: "district_en",
+      DISTRICT_HI: "district_hi",
+      PARTY_DISTRICT_ID: "party_district_id",
+      PARTY_DISTRICT_HI: "party_district_hi",
+      PARTY_DISTRICT_EN: "party_district_en",
+      DIV_ID: "div_id",
+      DIV_NAME_EN: "div_name_en",
+      DIV_NAME_HI: "div_name_hi",
+      DATA_RANGE: "data_range",
+      IS_ACTIVE: "is_active",
+      UPDATED_AT: "updated_at"
+    },
+    insertColumns: [
+      "data_id",
+      "data_id_name_hi",
+      "data_id_name_en",
+      "ac_no",
+      "ac_name_en",
+      "ac_name_hi",
+      "pc_no",
+      "pc_name_en",
+      "pc_name_hi",
+      "district_id",
+      "district_en",
+      "district_hi",
+      "party_district_id",
+      "party_district_hi",
+      "party_district_en",
+      "div_id",
+      "div_name_en",
+      "div_name_hi",
+      "data_range",
+      "is_active",
+      "updated_at"
+    ],
+    numericColumns: [
+      "data_id",
+      "ac_no",
+      "pc_no",
+      "district_id",
+      "party_district_id",
+      "div_id",
+      "is_active"
+    ],
+    jsonColumns: ["data_range"],
+    dateColumns: ["updated_at"],
+    dataIdType: "number"
+  },
+
+  eroll_castmaster: {
+    tableName: "eroll_castmaster",
+    sheetColumns: {
+      RID: "rid",
+      RELIGION_EN: "religion_en",
+      RELIGION_HI: "religion_hi",
+      CATID: "catid",
+      CASTCAT_EN: "castcat_en",
+      CASTCAT_HI: "castcat_hi",
+      CASTID: "castid",
+      CASTIDA_EN: "castida_en",
+      CASTIDA_HI: "castida_hi",
+      DATA_ID: "data_id"
+    },
+    insertColumns: [
+      "rid",
+      "religion_en",
+      "religion_hi",
+      "catid",
+      "castcat_en",
+      "castcat_hi",
+      "castid",
+      "castida_en",
+      "castida_hi",
+      "data_id"
+    ],
+    numericColumns: ["data_id"],
+    jsonColumns: [],
+    dateColumns: [],
+    dataIdType: "number"
+  },
+
+  eroll_dropdown: {
+    tableName: "eroll_dropdown",
+    sheetColumns: {
+      DROPDOWN_ID: "dropdown_id",
+      DROPDOWN_NAME: "dropdown_name",
+      VALUE_HI: "value_hi",
+      VALUE_EN: "value_en",
+      DATA_ID: "data_id",
+      VALUE_ID: "value_id"
+    },
+    insertColumns: [
+      "dropdown_id",
+      "dropdown_name",
+      "value_hi",
+      "value_en",
+      "data_id",
+      "value_id"
+    ],
+    numericColumns: ["dropdown_id", "data_id"],
+    jsonColumns: [],
+    dateColumns: [],
+    dataIdType: "number"
+  },
+
+  eroll_yojna_master: {
+    tableName: "eroll_yojna_master",
+    sheetColumns: {
+      YOJNA_NAME: "yojna_name",
+      REGID: "regid",
+      REG_NAME: "reg_name",
+      DATA_ID: "data_id",
+      IS_ACTIVE: "is_active",
+      UPDATED_AT: "updated_at",
+      YOJNA_ID: "yojna_id"
+    },
+    insertColumns: [
+      "yojna_name",
+      "regid",
+      "reg_name",
+      "data_id",
+      "is_active",
+      "updated_at",
+      "yojna_id"
+    ],
+    numericColumns: ["regid", "is_active", "yojna_id"],
+    jsonColumns: [],
+    dateColumns: ["updated_at"],
+    dataIdType: "string"
+  }
+};
+
+function parseCsvBuffer(fileBuffer) {
+  return new Promise((resolve, reject) => {
+    const rows = [];
+    const stream = Readable.from(fileBuffer);
+
+    stream
+      .pipe(
+        csv({
+          mapHeaders: ({ header }) =>
+            header ? header.trim().toLowerCase() : header
+        })
+      )
+      .on("data", (row) => rows.push(row))
+      .on("end", () => resolve(rows))
+      .on("error", reject);
+  });
+}
+
+function normalizeImportedRow(rawRow, config) {
+  const mappedRow = {};
+
+  for (const [csvKey, dbKey] of Object.entries(config.sheetColumns)) {
+    const foundKey = Object.keys(rawRow).find(
+      (k) => k.trim().toUpperCase() === csvKey
+    );
+
+    if (foundKey) {
+      mappedRow[dbKey] = rawRow[foundKey];
+    }
+  }
+
+  for (const key of Object.keys(mappedRow)) {
+    let value = mappedRow[key];
+
+    if (typeof value === "string") {
+      value = value.trim();
+    }
+
+    if (value === "") value = null;
+
+    if (value !== null && config.numericColumns.includes(key)) {
+      value = Number(value);
+      if (Number.isNaN(value)) value = null;
+    }
+
+    if (value !== null && config.jsonColumns.includes(key)) {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        value = null;
+      }
+    }
+
+    if (value !== null && config.dateColumns.includes(key)) {
+      const dt = new Date(value);
+      value = isNaN(dt.getTime()) ? null : dt;
+    }
+
+    mappedRow[key] = value;
+  }
+
+  return mappedRow;
+}
+
+async function bulkInsertRows(client, tableName, insertColumns, rows) {
+  if (!rows.length) return;
+
+  const values = [];
+  const placeholders = [];
+  let index = 1;
+
+  for (const row of rows) {
+    const rowPlaceholders = [];
+
+    for (const column of insertColumns) {
+      let value = row[column];
+
+      if (column === "updated_at" && !value) {
+        value = new Date();
+      }
+
+      if (column === "is_active" && (value === undefined || value === null)) {
+        value = 1;
+      }
+
+      if (column === "data_range" && value && typeof value === "object") {
+        value = JSON.stringify(value);
+      }
+
+      rowPlaceholders.push(`$${index++}`);
+      values.push(value ?? null);
+    }
+
+    placeholders.push(`(${rowPlaceholders.join(", ")})`);
+  }
+
+  const query = `
+    INSERT INTO ${tableName} (${insertColumns.join(", ")})
+    VALUES ${placeholders.join(", ")}
+  `;
+
+  await client.query(query, values);
+}
+
+const normalizeLikeValue = (value = "") => `%${String(value).trim()}%`;
+
+const getArrayFilter = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((v) => String(v).trim()).filter(Boolean);
+  }
+  if (value === null || value === undefined || value === "") {
+    return [];
+  }
+  return [String(value).trim()];
+};
+
+function escapeRegex(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildLooseSearchRegex(value = "") {
+  const cleaned = String(value).trim();
+  if (!cleaned) return "";
+
+  // multiple spaces ko flexible match banao
+  // "ya dav" => "ya\s*dav"
+  return escapeRegex(cleaned).replace(/\s+/g, "\\s*");
+}
+
 module.exports = {
+  votersResponseSchema,
+  encryptPassword,
+  decryptPassword,
+  buildLooseSearchRegex,
+  ALLOWED_COLUMNS,
+  tableConfig,
+  insertTableConfig,
+  deleteTableConfig,
+  patchTableConfig,
+  downloadTableConfig,
+  importCsvTableConfig,
+  parseCsvBuffer,
+  normalizeImportedRow,
+  bulkInsertRows,
+  normalizeLikeValue,
+  getArrayFilter,
+  formatDateReadable,
   getMergedPermissionsForAssignments,
   prepareAssignments,
   safeParse,

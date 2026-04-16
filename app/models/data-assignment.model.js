@@ -627,202 +627,17 @@ module.exports = {
     }
   },
 
-  getUserAssignments: async (user_id, requesterRole, selected_role_id) => {
+  getUserAssignments: async (user_id, requesterRole, selected_role_id, currentUserId) => {
     try {
-      const dataAssignmentsSql = `
-  SELECT
-    uda.id,
-    uda.user_id,
-    uda.db_table,
-    uda.wise_type,
-    uda.district,
-    uda.ac,
-    uda.pc,
-    uda.party_jila,
-    uda.data_id,
-    uda.block_id,
-    uda.gp_ward_id,
-    uda.village_id,
-    uda.ac_id,
-    uda.bhag_no,
-    uda.sec_no,
-    uda.mandal_id,
-    uda.kendra_id,
-    uda.created_by,
-    uda.updated_by,
-    uda.created_at,
-    uda.updated_at,
-    uda.is_active,
-    uda.age_from,
-    uda.age_to,
-    uda.cast_filter AS cast,
-
-    dm.data_id_name_hi,
-    COALESCE(dm.data_id_name_hi, 'N/A') AS data_id_label,
-
-    acmap.ac_names,
-    blockmap.block_names,
-    gpmap.gp_ward_names,
-    villagemap.village_names,
-    mandalmap.mandal_names,
-    kendramap.kendra_names,
-    bhagmap.bhag_names,
-    secmap.section_names
-
-  FROM user_data_assignments uda
-
-  LEFT JOIN dataid_importmaster dm
-    ON dm.data_id = uda.data_id::integer
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.ac_name, ', ' ORDER BY x.sort_id) AS ac_names
-    FROM (
-      SELECT DISTINCT ON (em.ac_id)
-        em.id AS sort_id,
-        COALESCE(em.ac_name, 'N/A') AS ac_name
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.ac_id::text = ANY(regexp_split_to_array(COALESCE(uda.ac_id, ''), '\\s*,\\s*'))
-      ORDER BY em.ac_id, em.id
-    ) x
-  ) acmap ON TRUE
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.block, ', ' ORDER BY x.sort_id) AS block_names
-    FROM (
-      SELECT DISTINCT ON (em.block_id)
-        em.id AS sort_id,
-        COALESCE(em.block, 'N/A') AS block
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.block_id = ANY(regexp_split_to_array(COALESCE(uda.block_id, ''), '\\s*,\\s*'))
-      ORDER BY em.block_id, em.id
-    ) x
-  ) blockmap ON TRUE
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.gp_ward, ', ' ORDER BY x.sort_id) AS gp_ward_names
-    FROM (
-      SELECT DISTINCT ON (em.gp_ward_id)
-        em.id AS sort_id,
-        COALESCE(em.gp_ward, 'N/A') AS gp_ward
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.gp_ward_id = ANY(regexp_split_to_array(COALESCE(uda.gp_ward_id, ''), '\\s*,\\s*'))
-      ORDER BY em.gp_ward_id, em.id
-    ) x
-  ) gpmap ON TRUE
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.village, ', ' ORDER BY x.sort_id) AS village_names
-    FROM (
-      SELECT DISTINCT ON (em.village_id)
-        em.id AS sort_id,
-        COALESCE(em.village, 'N/A') AS village
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.village_id = ANY(regexp_split_to_array(COALESCE(uda.village_id, ''), '\\s*,\\s*'))
-      ORDER BY em.village_id, em.id
-    ) x
-  ) villagemap ON TRUE
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.mandal, ', ' ORDER BY x.sort_id) AS mandal_names
-    FROM (
-      SELECT DISTINCT ON (em.mandal_id)
-        em.id AS sort_id,
-        COALESCE(em.mandal, 'N/A') AS mandal
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.mandal_id = ANY(regexp_split_to_array(COALESCE(uda.mandal_id, ''), '\\s*,\\s*'))
-      ORDER BY em.mandal_id, em.id
-    ) x
-  ) mandalmap ON TRUE
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.kendra, ', ' ORDER BY x.sort_id) AS kendra_names
-    FROM (
-      SELECT DISTINCT ON (em.kendra_id)
-        em.id AS sort_id,
-        COALESCE(em.kendra, 'N/A') AS kendra
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.kendra_id = ANY(regexp_split_to_array(COALESCE(uda.kendra_id, ''), '\\s*,\\s*'))
-      ORDER BY em.kendra_id, em.id
-    ) x
-  ) kendramap ON TRUE
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.bhag, ', ' ORDER BY x.sort_id) AS bhag_names
-    FROM (
-      SELECT DISTINCT ON (em.bhag_no)
-        em.id AS sort_id,
-        COALESCE(em.bhag, 'N/A') AS bhag
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.bhag_no::text = ANY(regexp_split_to_array(COALESCE(uda.bhag_no, ''), '\\s*,\\s*'))
-      ORDER BY em.bhag_no, em.id
-    ) x
-  ) bhagmap ON TRUE
-
-  LEFT JOIN LATERAL (
-    SELECT STRING_AGG(x.section, ', ' ORDER BY x.sort_id) AS section_names
-    FROM (
-      SELECT DISTINCT ON (em.sec_no)
-        em.id AS sort_id,
-        COALESCE(em.section, 'N/A') AS section
-      FROM eroll_mapping em
-      WHERE em.data_id = uda.data_id::integer
-        AND em.sec_no::text = ANY(regexp_split_to_array(COALESCE(uda.sec_no, ''), '\\s*,\\s*'))
-      ORDER BY em.sec_no, em.id
-    ) x
-  ) secmap ON TRUE
-
-  WHERE uda.user_id = $1
-    AND COALESCE(uda.is_active, 1) = 1
-
-  ORDER BY uda.id DESC
-`;
-
-      const columnPermissionsSql = `
-      SELECT
-        ucp.id,
-        ucp.user_id,
-        ucp.db_table,
-        ucp.column_name,
-        ucp.can_view,
-        ucp.can_mask,
-        ucp.can_edit,
-        ucp.can_copy,
-        ucp.created_by,
-        ucp.updated_by,
-        ucp.created_at,
-        ucp.updated_at,
-        ucp.assignment_id
-      FROM user_column_permissions ucp
-      WHERE ucp.user_id = $1
-      ORDER BY ucp.id DESC
-    `;
-
-      const userInfoSql = `
-      SELECT
-        id,
-        modules_code,
-        permission_code
-      FROM users
-      WHERE id = $1
-      LIMIT 1
-    `;
-
       const rolesSql = `
-      SELECT
-        id,
-        name,
-        code
-      FROM roles
-      WHERE is_active = true
-      ORDER BY name ASC
-    `;
+        SELECT
+          id,
+          name,
+          code
+        FROM roles
+        WHERE is_active = true
+        ORDER BY name ASC
+      `;
 
       const isAdmin = ["admin", "super_admin"].includes(
         String(requesterRole || "").toLowerCase()
@@ -833,48 +648,287 @@ module.exports = {
 
       if (isAdmin) {
         allUsersSql = `
-        SELECT
-          u.id,
-          u.username,
-          u.role_id,
-          u.modules_code,
-          u.permission_code
-        FROM users u
-        WHERE u.is_active = true
-          AND ($1::int IS NULL OR u.role_id = $1)
-          AND (
-            u.modules_code IS NOT NULL
-            OR u.permission_code IS NOT NULL
-          )
-        ORDER BY u.id DESC
-      `;
-        allUsersParams = [selected_role_id ? Number(selected_role_id) : null];
+          SELECT
+            u.id,
+            u.username,
+            u.mobile_no,
+            u.role,
+            u.modules_code,
+            u.permission_code,
+            CASE
+              WHEN
+                COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'web')::boolean, false)
+                OR
+                COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'mobile')::boolean, false)
+              THEN true
+              ELSE false
+            END AS status
+          FROM users u
+          WHERE
+            u.id != $2
+            AND (
+              (
+                COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'web')::boolean, false) = true
+                OR
+                COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'mobile')::boolean, false) = true
+              )
+              OR
+              u.modules_code IS NOT NULL
+              OR
+              u.permission_code IS NOT NULL
+            )
+            AND ($1::int IS NULL OR u.role_id = $1)
+          ORDER BY u.id DESC
+        `;
+        allUsersParams = [
+          selected_role_id ? Number(selected_role_id) : null,
+          Number(currentUserId),
+        ];
       } else {
         allUsersSql = `
-        SELECT
-          u.id,
-          u.username,
-          u.role_id
-        FROM users u
-        WHERE u.is_active = true
-          AND ($1::int IS NULL OR u.role_id = $1)
-        ORDER BY u.id DESC
-      `;
-        allUsersParams = [selected_role_id ? Number(selected_role_id) : null];
+          SELECT
+            u.id,
+            u.username,
+            u.mobile_no,
+            u.role,
+            CASE
+              WHEN
+                COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'web')::boolean, false)
+                OR
+                COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'mobile')::boolean, false)
+              THEN true
+              ELSE false
+            END AS status
+          FROM users u
+          WHERE
+            u.id != $2
+            AND (
+              COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'web')::boolean, false) = true
+              OR
+              COALESCE((COALESCE(u.login_access, '{}')::jsonb ->> 'mobile')::boolean, false) = true
+            )
+            AND ($1::int IS NULL OR u.role_id = $1)
+          ORDER BY u.id DESC
+        `;
+        allUsersParams = [
+          selected_role_id ? Number(selected_role_id) : null,
+          Number(currentUserId),
+        ];
       }
+
+      // jab user_id na ho tab sirf roles + users return karo
+      if (!user_id) {
+        const [allUsersResult, rolesResult] = await Promise.all([
+          pool.query(allUsersSql, allUsersParams),
+          pool.query(rolesSql),
+        ]);
+
+        return {
+          modules_code: null,
+          permission_code: null,
+          data_assignments: [],
+          column_permissions: [],
+          all_users: allUsersResult.rows || [],
+          roles: rolesResult.rows || [],
+        };
+      }
+
+      const dataAssignmentsSql = `
+        SELECT
+          uda.id,
+          uda.user_id,
+          uda.db_table,
+          uda.wise_type,
+          uda.district,
+          uda.ac,
+          uda.pc,
+          uda.party_jila,
+          uda.data_id,
+          uda.block_id,
+          uda.gp_ward_id,
+          uda.village_id,
+          uda.ac_id,
+          uda.bhag_no,
+          uda.sec_no,
+          uda.mandal_id,
+          uda.kendra_id,
+          uda.created_by,
+          uda.updated_by,
+          uda.created_at,
+          uda.updated_at,
+          uda.is_active,
+          uda.age_from,
+          uda.age_to,
+          uda.cast_filter AS cast,
+
+          dm.data_id_name_hi,
+          COALESCE(dm.data_id_name_hi, 'N/A') AS data_id_label,
+
+          acmap.ac_names,
+          blockmap.block_names,
+          gpmap.gp_ward_names,
+          villagemap.village_names,
+          mandalmap.mandal_names,
+          kendramap.kendra_names,
+          bhagmap.bhag_names,
+          secmap.section_names
+
+        FROM user_data_assignments uda
+
+        LEFT JOIN dataid_importmaster dm
+          ON dm.data_id = uda.data_id::integer
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.ac_name, ', ' ORDER BY x.sort_id) AS ac_names
+          FROM (
+            SELECT DISTINCT ON (em.ac_id)
+              em.id AS sort_id,
+              COALESCE(em.ac_name, 'N/A') AS ac_name
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.ac_id::text = ANY(regexp_split_to_array(COALESCE(uda.ac_id, ''), '\\s*,\\s*'))
+            ORDER BY em.ac_id, em.id
+          ) x
+        ) acmap ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.block, ', ' ORDER BY x.sort_id) AS block_names
+          FROM (
+            SELECT DISTINCT ON (em.block_id)
+              em.id AS sort_id,
+              COALESCE(em.block, 'N/A') AS block
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.block_id::text = ANY(regexp_split_to_array(COALESCE(uda.block_id, ''), '\\s*,\\s*'))
+            ORDER BY em.block_id, em.id
+          ) x
+        ) blockmap ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.gp_ward, ', ' ORDER BY x.sort_id) AS gp_ward_names
+          FROM (
+            SELECT DISTINCT ON (em.gp_ward_id)
+              em.id AS sort_id,
+              COALESCE(em.gp_ward, 'N/A') AS gp_ward
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.gp_ward_id::text = ANY(regexp_split_to_array(COALESCE(uda.gp_ward_id, ''), '\\s*,\\s*'))
+            ORDER BY em.gp_ward_id, em.id
+          ) x
+        ) gpmap ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.village, ', ' ORDER BY x.sort_id) AS village_names
+          FROM (
+            SELECT DISTINCT ON (em.village_id)
+              em.id AS sort_id,
+              COALESCE(em.village, 'N/A') AS village
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.village_id::text = ANY(regexp_split_to_array(COALESCE(uda.village_id, ''), '\\s*,\\s*'))
+            ORDER BY em.village_id, em.id
+          ) x
+        ) villagemap ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.mandal, ', ' ORDER BY x.sort_id) AS mandal_names
+          FROM (
+            SELECT DISTINCT ON (em.mandal_id)
+              em.id AS sort_id,
+              COALESCE(em.mandal, 'N/A') AS mandal
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.mandal_id::text = ANY(regexp_split_to_array(COALESCE(uda.mandal_id, ''), '\\s*,\\s*'))
+            ORDER BY em.mandal_id, em.id
+          ) x
+        ) mandalmap ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.kendra, ', ' ORDER BY x.sort_id) AS kendra_names
+          FROM (
+            SELECT DISTINCT ON (em.kendra_id)
+              em.id AS sort_id,
+              COALESCE(em.kendra, 'N/A') AS kendra
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.kendra_id::text = ANY(regexp_split_to_array(COALESCE(uda.kendra_id, ''), '\\s*,\\s*'))
+            ORDER BY em.kendra_id, em.id
+          ) x
+        ) kendramap ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.bhag, ', ' ORDER BY x.sort_id) AS bhag_names
+          FROM (
+            SELECT DISTINCT ON (em.bhag_no)
+              em.id AS sort_id,
+              COALESCE(em.bhag, 'N/A') AS bhag
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.bhag_no::text = ANY(regexp_split_to_array(COALESCE(uda.bhag_no, ''), '\\s*,\\s*'))
+            ORDER BY em.bhag_no, em.id
+          ) x
+        ) bhagmap ON TRUE
+
+        LEFT JOIN LATERAL (
+          SELECT STRING_AGG(x.section, ', ' ORDER BY x.sort_id) AS section_names
+          FROM (
+            SELECT DISTINCT ON (em.sec_no)
+              em.id AS sort_id,
+              COALESCE(em.section, 'N/A') AS section
+            FROM eroll_mapping em
+            WHERE em.data_id = uda.data_id::integer
+              AND em.sec_no::text = ANY(regexp_split_to_array(COALESCE(uda.sec_no, ''), '\\s*,\\s*'))
+            ORDER BY em.sec_no, em.id
+          ) x
+        ) secmap ON TRUE
+
+        WHERE uda.user_id = $1
+          AND COALESCE(uda.is_active, 1) = 1
+        ORDER BY uda.id DESC
+      `;
+
+      const columnPermissionsSql = `
+        SELECT
+          ucp.id,
+          ucp.user_id,
+          ucp.db_table,
+          ucp.column_name,
+          ucp.can_view,
+          ucp.can_mask,
+          ucp.can_edit,
+          ucp.can_copy,
+          ucp.created_by,
+          ucp.updated_by,
+          ucp.created_at,
+          ucp.updated_at,
+          ucp.assignment_id
+        FROM user_column_permissions ucp
+        WHERE ucp.user_id = $1
+        ORDER BY ucp.id DESC
+      `;
+
+      const userInfoSql = `
+        SELECT
+          id,
+          modules_code,
+          permission_code
+        FROM users
+        WHERE id = $1
+        LIMIT 1
+      `;
 
       const [
         dataAssignmentsResult,
         columnPermissionsResult,
         userInfoResult,
         allUsersResult,
-        rolesResult
+        rolesResult,
       ] = await Promise.all([
         pool.query(dataAssignmentsSql, [user_id]),
         pool.query(columnPermissionsSql, [user_id]),
         pool.query(userInfoSql, [user_id]),
         pool.query(allUsersSql, allUsersParams),
-        pool.query(rolesSql)
+        pool.query(rolesSql),
       ]);
 
       const userInfo = userInfoResult.rows[0] || null;

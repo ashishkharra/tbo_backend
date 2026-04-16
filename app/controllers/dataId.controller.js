@@ -10,6 +10,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs')
 const XLSX = require('xlsx')
 const { requireModulePermission } = require('../middlewares/authenticateToken.js')
+const { votersResponseSchema } = require('../helper/helper.js')
 
 
 const insertTableConfig = {
@@ -287,6 +288,7 @@ module.exports = {
                     acc[item.data_id] = [slimItem];
                 } else {
                     acc[item.data_id].push(slimItem);
+                    acc[item.data_id_name_hi].push(slimItem)
                 }
 
                 return acc;
@@ -369,7 +371,7 @@ module.exports = {
 
             const result = await dataIdModel.filterVoters(req.user, filters, limit, offset);
 
-            res.status(200).json({
+            const payload = {
                 success: true,
                 mapping: result.mapping,
                 metadata: {
@@ -378,7 +380,12 @@ module.exports = {
                     totalPages: Math.ceil(result.total / limit)
                 },
                 voters: result.voters
-            });
+            };
+
+            res
+                .status(200)
+                .type("application/json")
+                .send(votersResponseSchema(payload));
 
         } catch (error) {
             console.error(error);
@@ -423,17 +430,95 @@ module.exports = {
         }
     },
 
+    async getCastIdLookup(req, res) {
+        try {
+            const result = await dataIdModel.getCastIdLookup({
+                search: req.query.search || "",
+                data_id: req.query.data_id || null,
+                limit: req.query.limit || 20,
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: result,
+            });
+        } catch (error) {
+            console.error("getCastIdLookup controller error:", error);
+            return res.status(500).json({
+                success: false,
+                message: error.message || "Server error",
+            });
+        }
+    },
+
+    async getCastSurnameLookup(req, res) {
+        try {
+            const result = await dataIdModel.getCastSurnameLookup({
+                search: req.query.search || "",
+                data_id: req.query.data_id || null,
+                limit: req.query.limit || 20,
+            });
+
+            return res.status(200).json({
+                success: true,
+                data: result,
+            });
+        } catch (error) {
+            console.error("getCastSurnameLookup controller error:", error);
+            return res.status(500).json({
+                success: false,
+                message: error.message || "Server error",
+            });
+        }
+    },
+
     bulkUpdateDataIdVoters: async (req, res) => {
         try {
-            let updates = req.body;
+            let updates = [];
 
-            if (!Array.isArray(updates)) {
-                updates = [updates];
+            // Case 1: JSON body directly array me aayi
+            if (Array.isArray(req.body)) {
+                updates = req.body;
             }
 
-            if (req.files && req.files.length > 0) {
+            // Case 2: JSON body single object hai
+            else if (req.body && req.body.id && req.body.data_id) {
+                updates = [req.body];
+            }
 
-                req.files.forEach((file, index) => {
+            // Case 3: multipart/form-data me fields 0[id], 0[data_id]... format me aayi
+            else if (req.body && typeof req.body === "object") {
+                const grouped = {};
+
+                Object.keys(req.body).forEach((key) => {
+                    const match = key.match(/^(\d+)\[(.+)\]$/); // e.g. 0[id]
+                    if (!match) return;
+
+                    const index = Number(match[1]);
+                    const field = match[2];
+
+                    if (!grouped[index]) grouped[index] = {};
+                    grouped[index][field] = req.body[key];
+                });
+
+                updates = Object.values(grouped);
+            }
+
+            if (!Array.isArray(updates) || updates.length === 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "No valid update payload found",
+                });
+            }
+
+            // files ko correct row se map karo
+            if (req.files && req.files.length > 0) {
+                req.files.forEach((file) => {
+                    // frontend photo_0, photo_1 ke naam se bhej raha hai
+                    const match = file.fieldname.match(/^photo_(\d+)$/);
+                    if (!match) return;
+
+                    const index = Number(match[1]);
                     if (updates[index]) {
                         updates[index].photo = file.filename;
                     }
@@ -442,17 +527,16 @@ module.exports = {
 
             await dataIdModel.bulkUpdateVoters(updates);
 
-            res.json({
+            return res.json({
                 success: true,
-                message: "Voter(s) updated successfully"
+                message: "Voter(s) updated successfully",
             });
-
         } catch (error) {
             console.error("Bulk Update Error:", error);
 
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
-                message: error.message || "Internal Server Error"
+                message: error.message || "Internal Server Error",
             });
         }
     },
@@ -1463,11 +1547,7 @@ module.exports = {
 
     syncSurname: async (req, res) => {
         try {
-            console.log('yyyyyyyyy')
             const result = await dataIdModel.syncSurname(req);
-
-            console.log('tttttttt', result)
-
             return res.status(200).json({
                 success: true,
                 message: "Surnames synced successfully",
@@ -1485,15 +1565,19 @@ module.exports = {
 
     addEmptyRows: async (req, res) => {
         try {
+            const { table } = req.body
             let module = null, action = 'add_row';
-            if (table === 'dataid_importmaster') {
-                module = 'voter_list_data_id_master';
+            if (table === 'eroll_dropdown') {
+                module = 'voter_list_other_master';
             } else if (table === 'eroll_castmaster') {
                 module = 'voter_list_cast_id_master';
             } else if (table === 'eroll_yojna_master') {
                 module = 'voter_list_yojna_master'
             } else {
-                module = 'voter_list_other_master'
+                return res.status(401).json({
+                    success: false,
+                    message: 'Invalid table'
+                })
             }
             requireModulePermission(module, action)
             const result = await dataIdModel.addEmptyRows(req);
@@ -1554,4 +1638,95 @@ module.exports = {
             });
         }
     },
+
+    getSurnameList: async (req, res) => {
+        try {
+            const result = await dataIdModel.getSurnameList(req);
+
+            return res.status(200).json({
+                success: true,
+                message: "Surname data fetched successfully",
+                data: result.data || [],
+                pagination: result.pagination || {
+                    total: 0,
+                    page: 1,
+                    limit: 50,
+                    totalPages: 0,
+                    hasNextPage: false,
+                    hasPrevPage: false,
+                },
+            });
+        } catch (error) {
+            console.error("getSurnameList controller error:", error);
+
+            return res.status(500).json({
+                success: false,
+                message: error.message || "Server error",
+                data: [],
+                pagination: {
+                    total: 0,
+                    page: 1,
+                    limit: 50,
+                    totalPages: 0,
+                    hasNextPage: false,
+                    hasPrevPage: false,
+                },
+            });
+        }
+    },
+
+    syncDeleteDataId: async (req, res) => {
+        try {
+            await dataIdModel.syncDeleteDataId(req.body)
+            return res.status(200).json({
+                success: true,
+                message: 'Data id delete successfully'
+            })
+        } catch (error) {
+            console.log('sync delete data id error : ', error)
+            return res.status(500).json({
+                success: true,
+                message: error.message || 'Server Error'
+            })
+        }
+    },
+
+    inactivateDataId: async (req, res) => {
+        try {
+            await dataIdModel.inactivateDataId(req.body)
+            return res.status(200).json({
+                success: true,
+                message: 'Data id inactivated'
+            })
+        } catch (error) {
+            console.log('data id inactivation error : ', error)
+            return res.status(500).json({
+                success: true,
+                message: error.message || 'Server Error'
+            })
+        }
+    },
+
+    getCountsByDataIdsController: async (req, res) => {
+        try {
+            const { data_ids } = req.body;
+            const result = await dataIdModel.getCountsByDataIds(data_ids);
+            if (!result.success) {
+                return res.status(401).json({
+                    success: result?.success || false,
+                    message: result?.message
+                })
+            }
+            return res.status(200).json({
+                success: result?.success || false,
+                message: result?.message
+            })
+        } catch (err) {
+            return res.status(500).json({
+                success: false,
+                message: "Internal server error",
+                error: err.message
+            });
+        }
+    }
 }

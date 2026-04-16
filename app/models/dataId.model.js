@@ -6,553 +6,12 @@ const multer = require('multer')
 const { v4: uuidv4 } = require("uuid");
 const csv = require("csv-parser");
 const { Readable } = require("stream");
-const { getUserColumnPermissions, getUserDataAssignments, buildAssignmentWhere, applyColumnPermissions, buildAdvancedAssignmentWhere, doesRowMatchAssignment, buildPermissionMapByAssignment, mergePermissions, applyPermissionsToSingleRow, getUserColumnPermissionsByAssignments, prepareAssignments, getMergedPermissionsForAssignments, compilePermissions, applyCompiledPermissionsToSingleRow } = require('../helper/helper.js');
+const { getUserDataAssignments, buildAdvancedAssignmentWhere, doesRowMatchAssignment, buildPermissionMapByAssignment, getUserColumnPermissionsByAssignments, prepareAssignments, getMergedPermissionsForAssignments, compilePermissions, applyCompiledPermissionsToSingleRow, bulkInsertRows, normalizeImportedRow, parseCsvBuffer, importCsvTableConfig, downloadTableConfig, patchTableConfig, deleteTableConfig, insertTableConfig, tableConfig, ALLOWED_COLUMNS, getArrayFilter, normalizeLikeValue, buildLooseSearchRegex } = require('../helper/helper.js');
 
 
 async function refreshGlobalCache() {
   const { initGlobalCache } = require('../controllers/dataId.controller.js');
   return initGlobalCache();
-}
-
-const ALLOWED_COLUMNS = new Set([
-  "data_id_name_hi",
-  "data_id_name_en",
-  "ac_name_hi",
-  "ac_name_en",
-]);
-
-const tableConfig = {
-  dataid_importmaster: {
-    filters: ["data_id", "is_active"],
-    searchColumns: [
-      "ac_name_hi",
-      "ac_name_en",
-      "pc_name_hi",
-      "pc_name_en",
-      "district_en",
-      "district_hi",
-      "party_district_hi",
-      "party_district_en",
-      "div_name_hi",
-      "div_name_en"
-    ],
-    orderBy: "data_id"
-  },
-
-  eroll_castmaster: {
-    filters: ["data_id"],
-    searchColumns: [
-      "religion_en",
-      "religion_hi",
-      "castcat_en",
-      "castcat_hi",
-      "castida_en",
-      "castida_hi"
-    ],
-    orderBy: "data_id"
-  },
-
-  eroll_dropdown: {
-    filters: ["data_id", "dropdown_name"],
-    searchColumns: ["value_hi", "value_en"],
-    orderBy: "dropdown_id"
-  },
-
-  eroll_yojna_master: {
-    filters: ["data_id", "reg_name"],
-    searchColumns: ["yojna_name"],
-    orderBy: "yojna_id"
-  }
-};
-
-const insertTableConfig = {
-  dataid_importmaster: {
-    columns: [
-      "data_id",
-      "data_id_name_hi",
-      "data_id_name_en",
-      "ac_no",
-      "ac_name_en",
-      "ac_name_hi",
-      "pc_no",
-      "pc_name_en",
-      "pc_name_hi",
-      "district_id",
-      "district_en",
-      "district_hi",
-      "party_district_id",
-      "party_district_hi",
-      "party_district_en",
-      "div_id",
-      "div_name_en",
-      "div_name_hi",
-      "data_range",
-      "is_active",
-      "updated_at"
-    ],
-    required: ["data_id"],
-    defaults: {
-      ac_no: 0,
-      pc_no: 0,
-      district_id: 0,
-      party_district_id: 0,
-      div_id: 0,
-      is_active: 1
-    }
-  },
-
-  eroll_castmaster: {
-    columns: [
-      "rid",
-      "religion_en",
-      "religion_hi",
-      "catid",
-      "castcat_en",
-      "castcat_hi",
-      "castid",
-      "castida_en",
-      "castida_hi",
-      "data_id"
-    ],
-    required: ["data_id"],
-    defaults: {}
-  },
-
-  eroll_dropdown: {
-    columns: [
-      "dropdown_id",
-      "dropdown_name",
-      "value_hi",
-      "value_en",
-      "data_id",
-      "value_id"
-    ],
-    required: ["data_id"],
-    defaults: {}
-  },
-
-  eroll_yojna_master: {
-    columns: [
-      "yojna_name",
-      "regid",
-      "reg_name",
-      "data_id",
-      "is_active",
-      "updated_at",
-      "yojna_id"
-    ],
-    required: ["data_id"],
-    defaults: {
-      is_active: 1
-    }
-  }
-};
-
-const deleteTableConfig = {
-  dataid_importmaster: true,
-  eroll_castmaster: true,
-  eroll_dropdown: true,
-  eroll_yojna_master: true,
-};
-
-const patchTableConfig = {
-  dataid_importmaster: [
-    "data_id",
-    "data_id_name_hi",
-    "data_id_name_en",
-    "ac_no",
-    "ac_name_en",
-    "ac_name_hi",
-    "pc_no",
-    "pc_name_en",
-    "pc_name_hi",
-    "district_id",
-    "district_en",
-    "district_hi",
-    "party_district_id",
-    "party_district_hi",
-    "party_district_en",
-    "div_id",
-    "div_name_en",
-    "div_name_hi",
-    "data_range",
-    "is_active"
-  ],
-
-  eroll_castmaster: [
-    "rid",
-    "religion_en",
-    "religion_hi",
-    "catid",
-    "castcat_en",
-    "castcat_hi",
-    "castid",
-    "castida_en",
-    "castida_hi",
-    "data_id"
-  ],
-
-  eroll_dropdown: [
-    "dropdown_id",
-    "dropdown_name",
-    "value_hi",
-    "value_en",
-    "data_id",
-    "value_id"
-  ],
-
-  eroll_yojna_master: [
-    "yojna_name",
-    "regid",
-    "reg_name",
-    "data_id",
-    "is_active",
-    "updated_at",
-    "yojna_id"
-  ]
-};
-
-const downloadTableConfig = {
-  dataid_importmaster: {
-    sheetName: "ImportMaster",
-    query: ({ whereClause }) => `
-      SELECT
-        id AS "ID",
-        data_id AS "DATA_ID",
-        data_id_name_hi AS "DATA_ID_NAME_HI",
-        data_id_name_en AS "DATA_ID_NAME_EN",
-        ac_no AS "AC_NO",
-        ac_name_en AS "AC_NAME_EN",
-        ac_name_hi AS "AC_NAME_HI",
-        pc_no AS "PC_NO",
-        pc_name_en AS "PC_NAME_EN",
-        pc_name_hi AS "PC_NAME_HI",
-        district_id AS "DISTRICT_ID",
-        district_en AS "DISTRICT_EN",
-        district_hi AS "DISTRICT_HI",
-        party_district_id AS "PARTY_DISTRICT_ID",
-        party_district_hi AS "PARTY_DISTRICT_HI",
-        party_district_en AS "PARTY_DISTRICT_EN",
-        div_id AS "DIV_ID",
-        div_name_en AS "DIV_NAME_EN",
-        div_name_hi AS "DIV_NAME_HI",
-        CASE
-          WHEN data_range IS NOT NULL THEN data_range::text
-          ELSE ''
-        END AS "DATA_RANGE",
-        is_active AS "IS_ACTIVE",
-        updated_at AS "UPDATED_AT"
-      FROM dataid_importmaster
-      ${whereClause}
-      ORDER BY id DESC
-    `
-  },
-
-  eroll_castmaster: {
-    sheetName: "CastMaster",
-    query: ({ whereClause }) => `
-      SELECT
-        id AS "ID",
-        rid AS "RID",
-        religion_en AS "RELIGION_EN",
-        religion_hi AS "RELIGION_HI",
-        catid AS "CATID",
-        castcat_en AS "CASTCAT_EN",
-        castcat_hi AS "CASTCAT_HI",
-        castid AS "CASTID",
-        castida_en AS "CASTIDA_EN",
-        castida_hi AS "CASTIDA_HI",
-        data_id AS "DATA_ID"
-      FROM eroll_castmaster
-      ${whereClause}
-      ORDER BY id DESC
-    `
-  },
-
-  eroll_dropdown: {
-    sheetName: "DropdownMaster",
-    query: ({ whereClause }) => `
-      SELECT
-        id AS "ID",
-        dropdown_id AS "DROPDOWN_ID",
-        dropdown_name AS "DROPDOWN_NAME",
-        value_hi AS "VALUE_HI",
-        value_en AS "VALUE_EN",
-        data_id AS "DATA_ID",
-        value_id AS "VALUE_ID"
-      FROM eroll_dropdown
-      ${whereClause}
-      ORDER BY id DESC
-    `
-  },
-
-  eroll_yojna_master: {
-    sheetName: "YojnaMaster",
-    query: ({ whereClause }) => `
-      SELECT
-        id AS "ID",
-        yojna_name AS "YOJNA_NAME",
-        regid AS "REGID",
-        reg_name AS "REG_NAME",
-        data_id AS "DATA_ID",
-        is_active AS "IS_ACTIVE",
-        updated_at AS "UPDATED_AT",
-        yojna_id AS "YOJNA_ID"
-      FROM eroll_yojna_master
-      ${whereClause}
-      ORDER BY id DESC
-    `
-  }
-};
-
-const importCsvTableConfig = {
-  dataid_importmaster: {
-    tableName: "dataid_importmaster",
-    sheetColumns: {
-      DATA_ID: "data_id",
-      DATA_ID_NAME_HI: "data_id_name_hi",
-      DATA_ID_NAME_EN: "data_id_name_en",
-      AC_NO: "ac_no",
-      AC_NAME_EN: "ac_name_en",
-      AC_NAME_HI: "ac_name_hi",
-      PC_NO: "pc_no",
-      PC_NAME_EN: "pc_name_en",
-      PC_NAME_HI: "pc_name_hi",
-      DISTRICT_ID: "district_id",
-      DISTRICT_EN: "district_en",
-      DISTRICT_HI: "district_hi",
-      PARTY_DISTRICT_ID: "party_district_id",
-      PARTY_DISTRICT_HI: "party_district_hi",
-      PARTY_DISTRICT_EN: "party_district_en",
-      DIV_ID: "div_id",
-      DIV_NAME_EN: "div_name_en",
-      DIV_NAME_HI: "div_name_hi",
-      DATA_RANGE: "data_range",
-      IS_ACTIVE: "is_active",
-      UPDATED_AT: "updated_at"
-    },
-    insertColumns: [
-      "data_id",
-      "data_id_name_hi",
-      "data_id_name_en",
-      "ac_no",
-      "ac_name_en",
-      "ac_name_hi",
-      "pc_no",
-      "pc_name_en",
-      "pc_name_hi",
-      "district_id",
-      "district_en",
-      "district_hi",
-      "party_district_id",
-      "party_district_hi",
-      "party_district_en",
-      "div_id",
-      "div_name_en",
-      "div_name_hi",
-      "data_range",
-      "is_active",
-      "updated_at"
-    ],
-    numericColumns: [
-      "data_id",
-      "ac_no",
-      "pc_no",
-      "district_id",
-      "party_district_id",
-      "div_id",
-      "is_active"
-    ],
-    jsonColumns: ["data_range"],
-    dateColumns: ["updated_at"],
-    dataIdType: "number"
-  },
-
-  eroll_castmaster: {
-    tableName: "eroll_castmaster",
-    sheetColumns: {
-      RID: "rid",
-      RELIGION_EN: "religion_en",
-      RELIGION_HI: "religion_hi",
-      CATID: "catid",
-      CASTCAT_EN: "castcat_en",
-      CASTCAT_HI: "castcat_hi",
-      CASTID: "castid",
-      CASTIDA_EN: "castida_en",
-      CASTIDA_HI: "castida_hi",
-      DATA_ID: "data_id"
-    },
-    insertColumns: [
-      "rid",
-      "religion_en",
-      "religion_hi",
-      "catid",
-      "castcat_en",
-      "castcat_hi",
-      "castid",
-      "castida_en",
-      "castida_hi",
-      "data_id"
-    ],
-    numericColumns: ["data_id"],
-    jsonColumns: [],
-    dateColumns: [],
-    dataIdType: "number"
-  },
-
-  eroll_dropdown: {
-    tableName: "eroll_dropdown",
-    sheetColumns: {
-      DROPDOWN_ID: "dropdown_id",
-      DROPDOWN_NAME: "dropdown_name",
-      VALUE_HI: "value_hi",
-      VALUE_EN: "value_en",
-      DATA_ID: "data_id",
-      VALUE_ID: "value_id"
-    },
-    insertColumns: [
-      "dropdown_id",
-      "dropdown_name",
-      "value_hi",
-      "value_en",
-      "data_id",
-      "value_id"
-    ],
-    numericColumns: ["dropdown_id", "data_id"],
-    jsonColumns: [],
-    dateColumns: [],
-    dataIdType: "number"
-  },
-
-  eroll_yojna_master: {
-    tableName: "eroll_yojna_master",
-    sheetColumns: {
-      YOJNA_NAME: "yojna_name",
-      REGID: "regid",
-      REG_NAME: "reg_name",
-      DATA_ID: "data_id",
-      IS_ACTIVE: "is_active",
-      UPDATED_AT: "updated_at",
-      YOJNA_ID: "yojna_id"
-    },
-    insertColumns: [
-      "yojna_name",
-      "regid",
-      "reg_name",
-      "data_id",
-      "is_active",
-      "updated_at",
-      "yojna_id"
-    ],
-    numericColumns: ["regid", "is_active", "yojna_id"],
-    jsonColumns: [],
-    dateColumns: ["updated_at"],
-    dataIdType: "string"
-  }
-};
-
-function parseCsvBuffer(fileBuffer) {
-  return new Promise((resolve, reject) => {
-    const rows = [];
-    const stream = Readable.from(fileBuffer);
-
-    stream
-      .pipe(
-        csv({
-          mapHeaders: ({ header }) =>
-            header ? header.trim().toLowerCase() : header
-        })
-      )
-      .on("data", (row) => rows.push(row))
-      .on("end", () => resolve(rows))
-      .on("error", reject);
-  });
-}
-
-function normalizeImportedRow(rawRow, config) {
-  const mappedRow = {};
-
-  for (const [csvKey, dbKey] of Object.entries(config.sheetColumns)) {
-    const foundKey = Object.keys(rawRow).find(
-      (k) => k.trim().toUpperCase() === csvKey
-    );
-
-    if (foundKey) {
-      mappedRow[dbKey] = rawRow[foundKey];
-    }
-  }
-
-  for (const key of Object.keys(mappedRow)) {
-    let value = mappedRow[key];
-
-    if (typeof value === "string") {
-      value = value.trim();
-    }
-
-    if (value === "") value = null;
-
-    if (value !== null && config.numericColumns.includes(key)) {
-      value = Number(value);
-      if (Number.isNaN(value)) value = null;
-    }
-
-    if (value !== null && config.jsonColumns.includes(key)) {
-      try {
-        value = JSON.parse(value);
-      } catch {
-        value = null;
-      }
-    }
-
-    if (value !== null && config.dateColumns.includes(key)) {
-      const dt = new Date(value);
-      value = isNaN(dt.getTime()) ? null : dt;
-    }
-
-    mappedRow[key] = value;
-  }
-
-  return mappedRow;
-}
-
-async function bulkInsertRows(client, tableName, insertColumns, rows) {
-  if (!rows.length) return;
-
-  const values = [];
-  const placeholders = [];
-  let index = 1;
-
-  for (const row of rows) {
-    const rowPlaceholders = [];
-
-    for (const column of insertColumns) {
-      let value = row[column];
-
-      if (column === "updated_at" && !value) {
-        value = new Date();
-      }
-
-      if (column === "is_active" && (value === undefined || value === null)) {
-        value = 1;
-      }
-
-      if (column === "data_range" && value && typeof value === "object") {
-        value = JSON.stringify(value);
-      }
-
-      rowPlaceholders.push(`$${index++}`);
-      values.push(value ?? null);
-    }
-
-    placeholders.push(`(${rowPlaceholders.join(", ")})`);
-  }
-
-  const query = `
-    INSERT INTO ${tableName} (${insertColumns.join(", ")})
-    VALUES ${placeholders.join(", ")}
-  `;
-
-  await client.query(query, values);
 }
 
 
@@ -565,9 +24,9 @@ module.exports = {
       ac_name_hi
     FROM dataid_importmaster
     WHERE is_active = 0
-      AND ac_no IS NOT NULL
-      AND ac_no <> 0
-      AND ac_name_hi IS NOT NULL
+      OR ac_no IS NOT NULL
+      OR ac_no <> 0
+      OR ac_name_hi IS NOT NULL
     ORDER BY ac_no
   `;
 
@@ -803,24 +262,35 @@ module.exports = {
       ORDER BY em.bhag_no ASC, em.sec_no ASC
     `;
 
-      console.time('start')
       const mappingRes = await pool.query(mappingSql, data_id ? [data_id] : []);
-      console.timeEnd('start')
       const rows = mappingRes.rows;
       const transformedMapping = {};
 
+      console.time("caste");
+
+      const casteParams = [...queryParams];
+
+      const casteConditions = [...conditions];
+      casteConditions.push(`ed.castid IS NOT NULL`);
+      casteConditions.push(`TRIM(ed.castid) <> ''`);
+
+      const casteWhereClause = casteConditions.length
+        ? `WHERE ${casteConditions.join(" AND ")}`
+        : "";
+
       const casteSql = `
-  SELECT DISTINCT
+  SELECT
     UPPER(TRIM(ed.castid)) AS castid,
     ed.sex
   FROM eroll_db ed
-  ${whereClause
-          ? whereClause + " AND ed.castid IS NOT NULL AND TRIM(ed.castid) <> ''"
-          : "WHERE ed.castid IS NOT NULL AND TRIM(ed.castid) <> ''"
-        }
+  ${casteWhereClause}
+  GROUP BY UPPER(TRIM(ed.castid)), ed.sex
+  ORDER BY UPPER(TRIM(ed.castid)) ASC
 `;
 
-      const casteRes = await pool.query(casteSql, queryParams);
+      const casteRes = await pool.query(casteSql, casteParams);
+
+      console.timeEnd("caste");
 
       transformedMapping.castid = [
         ...new Set(casteRes.rows.map(r => r.castid).filter(Boolean))
@@ -878,49 +348,120 @@ module.exports = {
           .sort((a, b) => a.sec_no - b.sec_no);
       }
 
+      console.time('voters')
       const voterSql = `
-      SELECT
-        ed.*,
-        em.block_id,
-        em.gp_ward_id,
-        em.village_id,
-        em.mandal_id,
-        em.kendra_id,
-        em.block,
-        em.gp_ward,
-        em.village,
-        em.mandal,
-        em.kendra,
-        em.section,
-        TO_CHAR(ed.dob, 'DD-MM-YYYY') as dob,
-        TO_CHAR(ed.update_by, 'DD-MM-YYYY HH24:MI') as update_by
-      FROM eroll_db ed
-      LEFT JOIN eroll_mapping em
-        ON ed.data_id = em.data_id
-       AND ed.ac_no = em.ac_id
-       AND ed.bhag_no = em.bhag_no
-       AND ed.sec_no = em.sec_no
-      ${whereClause}
-      ORDER BY ed.ac_no ASC, ed.bhag_no ASC, ed.sec_no ASC, ed.vsno ASC
-      LIMIT $${queryParams.length + 1}
-      OFFSET $${queryParams.length + 2}
-    `;
+        SELECT
+          ed.*,
+          em.block_id,
+          em.gp_ward_id,
+          em.village_id,
+          em.mandal_id,
+          em.kendra_id,
+          em.block,
+          em.gp_ward,
+          em.village,
+          em.mandal,
+          em.kendra,
+          em.section,
+
+          COALESCE(ecm.castida_hi, '') AS cast_id,
+          COALESCE(ecm.castida_hi, '') AS caste,
+          COALESCE(ecm.castcat_en, '') AS cast_cat_name,
+          COALESCE(ecm.religion_hi, '') AS religion,
+
+          TO_CHAR(ed.dob, 'DD-MM-YYYY') as dob,
+          TO_CHAR(ed.update_by, 'DD-MM-YYYY HH24:MI') as update_by
+        FROM eroll_db ed
+        LEFT JOIN eroll_mapping em
+          ON ed.data_id = em.data_id
+        AND ed.ac_no = em.ac_id
+        AND ed.bhag_no = em.bhag_no
+        AND ed.sec_no = em.sec_no
+        LEFT JOIN eroll_castmaster ecm
+          ON ecm.data_id = ed.data_id
+        AND UPPER(TRIM(ecm.castid)) = UPPER(TRIM(ed.castid))
+        ${whereClause}
+        ORDER BY ed.ac_no ASC, ed.bhag_no ASC, ed.sec_no ASC, ed.vsno ASC
+        LIMIT $${queryParams.length + 1}
+        OFFSET $${queryParams.length + 2}
+      `;
 
       const { rows: votersRaw } = await pool.query(
         voterSql,
         [...queryParams, limit, offset]
       );
+      console.timeEnd('voters')
 
-      const countSql = `
-  SELECT COUNT(*)
-  FROM eroll_db ed
-  ${whereClause}
-`;
+      console.time('count')
 
-      const countRes = await pool.query(countSql, queryParams);
+      let totalCount = 0;
+
+      const isSimpleCount =
+        data_id &&
+        !ac_no &&
+        !ageFrom &&
+        !ageTo &&
+        !cast_filter &&
+        !castid &&
+        (!conditions || conditions.length === 1);
+
+      if (isSimpleCount) {
+        const countCacheRes = await pool.query(
+          `SELECT total_count FROM eroll_db_counts WHERE data_id = $1 LIMIT 1`,
+          [data_id]
+        );
+
+        if (countCacheRes.rowCount > 0) {
+          totalCount = Number(countCacheRes.rows[0].total_count);
+        } else {
+          const countSql = `
+            SELECT COUNT(*)::BIGINT AS count
+            FROM eroll_db ed
+            LEFT JOIN eroll_mapping em
+            ON ed.data_id = em.data_id
+            AND ed.ac_no = em.ac_id
+            AND ed.bhag_no = em.bhag_no
+            AND ed.sec_no = em.sec_no
+            ${whereClause}
+          `;
+
+          const countRes = await pool.query(countSql, queryParams);
+          totalCount = Number(countRes.rows[0].count);
+
+          await pool.query(
+            `
+              INSERT INTO eroll_db_counts (data_id, total_count)
+              VALUES ($1, $2)
+              ON CONFLICT (data_id)
+              DO UPDATE SET total_count = EXCLUDED.total_count,
+              updated_at = NOW()
+            `,
+            [data_id, totalCount]
+          );
+        }
+      } else {
+        const countSql = `
+          SELECT COUNT(*)::BIGINT AS count
+          FROM eroll_db ed
+          LEFT JOIN eroll_mapping em
+          ON ed.data_id = em.data_id
+          AND ed.ac_no = em.ac_id
+          AND ed.bhag_no = em.bhag_no
+          AND ed.sec_no = em.sec_no
+          ${whereClause}
+        `;
+
+        const countRes = await pool.query(countSql, queryParams);
+        totalCount = Number(countRes.rows[0].count);
+      }
+
+      console.timeEnd('count')
+
 
       let finalVoters = votersRaw;
       let visible_columns = [];
+
+      console.time('permission')
 
       if (!isSuperUser) {
         const preparedAssignments = prepareAssignments(dataAssignments);
@@ -969,10 +510,12 @@ module.exports = {
         visible_columns = Object.keys(votersRaw[0] || {});
       }
 
+      console.timeEnd('permission')
+
       return {
         mapping: transformedMapping,
         voters: finalVoters,
-        total: parseInt(countRes.rows[0].count),
+        total: totalCount,
         visible_columns
       };
     } catch (error) {
@@ -1403,47 +946,337 @@ module.exports = {
     }
   },
 
+  async getCastIdLookup({ search = "", data_id = null, limit = 20 }) {
+    try {
+      const values = [];
+      let idx = 1;
+      const where = [];
+
+      const searchText = String(search || "").trim().toUpperCase();
+
+      if (!searchText) {
+        return [];
+      }
+
+      if (data_id !== null && data_id !== undefined && data_id !== "") {
+        const dataIds = getArrayFilter(data_id)
+          .map((v) => Number(v))
+          .filter((v) => Number.isFinite(v));
+
+        if (dataIds.length) {
+          where.push(`ecm.data_id = ANY($${idx}::int[])`);
+          values.push(dataIds);
+          idx++;
+        }
+      }
+
+      // only exact castid match
+      where.push(`UPPER(TRIM(COALESCE(ecm.castid, ''))) = $${idx}`);
+      values.push(searchText);
+      idx++;
+
+      // only meaningful castid rows
+      where.push(`NULLIF(TRIM(COALESCE(ecm.castid, '')), '') IS NOT NULL`);
+
+      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+      const sql = `
+      SELECT DISTINCT ON (UPPER(TRIM(COALESCE(ecm.castid, ''))), ecm.data_id)
+        TRIM(COALESCE(ecm.castid, '')) AS castid,
+        COALESCE(NULLIF(TRIM(ecm.castida_hi), ''), '') AS caste,
+        COALESCE(NULLIF(TRIM(ecm.catid), ''), '') AS cast_cat,
+        COALESCE(NULLIF(TRIM(ecm.religion_hi), ''), NULLIF(TRIM(ecm.religion_en), ''), '') AS religion,
+        ecm.data_id
+      FROM eroll_castmaster ecm
+      ${whereSql}
+      ORDER BY
+        UPPER(TRIM(COALESCE(ecm.castid, ''))),
+        ecm.data_id,
+        ecm.id DESC
+      LIMIT $${idx}
+    `;
+
+      values.push(Number(limit) || 1);
+
+      const result = await pool.query(sql, values);
+      return result.rows || [];
+    } catch (error) {
+      console.error("getCastIdLookup error:", error);
+      throw error;
+    }
+  },
+
+  async getCastSurnameLookup({ search = "", data_id = null, limit = 20 }) {
+    try {
+      const values = [];
+      let idx = 1;
+      const where = [];
+
+      const searchText = String(search || "").trim();
+      const normalizedSearch = searchText.replace(/\s+/g, " ").trim();
+      const upperSearch = normalizedSearch.toUpperCase();
+      const regexValue = normalizedSearch ? buildLooseSearchRegex(normalizedSearch) : "";
+
+      if (data_id !== null && data_id !== undefined && data_id !== "") {
+        const dataIds = getArrayFilter(data_id)
+          .map((v) => Number(v))
+          .filter((v) => Number.isFinite(v));
+
+        if (dataIds.length) {
+          where.push(`base.data_id = ANY($${idx}::int[])`);
+          values.push(dataIds);
+          idx++;
+        }
+      }
+
+      // only meaningful castid_surname rows
+      where.push(`NULLIF(TRIM(COALESCE(base.castid_surname, '')), '') IS NOT NULL`);
+
+      if (normalizedSearch) {
+        where.push(`(
+        UPPER(TRIM(COALESCE(base.castid_surname, ''))) LIKE UPPER($${idx})
+        OR UPPER(TRIM(COALESCE(base.surname, ''))) LIKE UPPER($${idx})
+        OR UPPER(TRIM(COALESCE(base.subcast, ''))) LIKE UPPER($${idx})
+
+        OR TRIM(COALESCE(base.castid_surname, '')) ~* $${idx + 1}
+        OR TRIM(COALESCE(base.surname, '')) ~* $${idx + 1}
+        OR TRIM(COALESCE(base.subcast, '')) ~* $${idx + 1}
+      )`);
+
+        values.push(`%${normalizedSearch}%`);
+        values.push(regexValue);
+        idx += 2;
+      }
+
+      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+      const sql = `
+      WITH base AS (
+        SELECT
+          ed.id,
+          ed.data_id,
+          TRIM(COALESCE(ed.castid_surname, '')) AS castid_surname,
+          TRIM(
+            CASE
+              WHEN jsonb_typeof(ed.surname) = 'object' THEN COALESCE(ed.surname ->> 'v', '')
+              ELSE ''
+            END
+          ) AS surname,
+          TRIM(COALESCE(ed.subcast, '')) AS subcast,
+          COALESCE(ed.oldnew, 0) AS oldnew
+        FROM eroll_db ed
+      ),
+      ranked AS (
+        SELECT
+          base.*,
+          CASE
+            WHEN $${idx} <> '' AND UPPER(base.castid_surname) = $${idx} THEN 1
+            WHEN $${idx} <> '' AND UPPER(base.surname) = $${idx} THEN 2
+            WHEN $${idx} <> '' AND UPPER(base.subcast) = $${idx} THEN 3
+
+            WHEN $${idx + 1} <> '' AND UPPER(base.castid_surname) LIKE $${idx + 1} THEN 4
+            WHEN $${idx + 1} <> '' AND UPPER(base.surname) LIKE $${idx + 1} THEN 5
+            WHEN $${idx + 1} <> '' AND UPPER(base.subcast) LIKE $${idx + 1} THEN 6
+
+            WHEN $${idx + 2} <> '' AND base.castid_surname ~* $${idx + 2} THEN 7
+            WHEN $${idx + 2} <> '' AND base.surname ~* $${idx + 2} THEN 8
+            WHEN $${idx + 2} <> '' AND base.subcast ~* $${idx + 2} THEN 9
+
+            ELSE 99
+          END AS search_rank
+        FROM base
+        ${whereSql}
+      )
+      SELECT DISTINCT ON (
+        UPPER(castid_surname),
+        UPPER(surname),
+        COALESCE(data_id, 0)
+      )
+        castid_surname,
+        surname,
+        subcast,
+        oldnew,
+        data_id
+      FROM ranked
+      ORDER BY
+        UPPER(castid_surname),
+        UPPER(surname),
+        COALESCE(data_id, 0),
+        search_rank ASC,
+        id DESC
+      LIMIT $${idx + 3}
+    `;
+
+      values.push(upperSearch);
+      values.push(upperSearch ? `${upperSearch}%` : "");
+      values.push(regexValue || "");
+      values.push(Number(limit) || 20);
+
+      const result = await pool.query(sql, values);
+      return result.rows || [];
+    } catch (error) {
+      console.error("getCastSurnameLookup error:", error);
+      throw error;
+    }
+  },
+
   bulkUpdateVoters: async (updates) => {
     const client = await pool.connect();
+
+    const mappingKeys = new Set([
+      "block_id",
+      "gp_ward_id",
+      "village_id",
+      "kendra_id",
+      "mandal_id",
+      "pjila_id",
+      "pincode_id",
+      "policst_id",
+      "postoff_id",
+      "psb_id",
+      "coordinate_id",
+    ]);
+
+    const erollDbColumns = new Set([
+      "card_id",
+      "ac_no",
+      "bhag_no",
+      "sec_no",
+      "section",
+      "epic",
+      "vsno",
+      "vname",
+      "sex",
+      "age",
+      "dob",
+      "relation",
+      "rname",
+      "hno",
+      "phone1",
+      "phone2",
+      "castid",
+      "cast_cat",
+      "castid_surname",
+      "subcast",
+      "oldnew",
+      "familyid",
+      "hof",
+      "hof_relation",
+      "surname",
+      "star",
+      "photo",
+      "pdob_verify",
+      "msg",
+      "voter_view",
+      "v_parchi",
+      "worker_id",
+      "edu_id",
+      "proff_id",
+      "proff_city",
+      "bank_name",
+      "acc_no",
+      "ifsc",
+      "upi_id",
+      "aadhar_no",
+    ]);
 
     try {
       await client.query("BEGIN");
 
       for (const voter of updates) {
-
         const { id, data_id, ...fields } = voter;
 
-        if (!id || !data_id) {
+        if (id == null || data_id == null) {
           throw new Error("id and data_id are required");
         }
 
-        const keys = Object.keys(fields);
+        const directFields = {};
+        const mappingFields = {};
 
-        if (keys.length === 0) continue;
+        for (const [key, value] of Object.entries(fields)) {
+          if (value === undefined) continue;
 
-        const setClause = keys
-          .map((key, index) => `"${key}" = $${index + 1}`)
-          .join(", ");
+          if (mappingKeys.has(key)) {
+            mappingFields[key] = value;
+            continue;
+          }
 
-        const values = keys.map((key) => fields[key]);
+          if (erollDbColumns.has(key)) {
+            directFields[key] = value;
+            continue;
+          }
+        }
 
-        await client.query(
+        console.log("directFields ->", directFields);
+        console.log("mappingFields ->", mappingFields);
+
+        const setParts = [];
+        const values = [];
+        let paramIndex = 1;
+
+        for (const [key, value] of Object.entries(directFields)) {
+          setParts.push(`"${key}" = $${paramIndex}`);
+          values.push(value);
+          paramIndex++;
+        }
+
+        if (Object.keys(mappingFields).length > 0) {
+          setParts.push(
+            `mapping = COALESCE(mapping, '{}'::jsonb) || $${paramIndex}::jsonb`
+          );
+          values.push(JSON.stringify(mappingFields));
+          paramIndex++;
+        }
+
+        if (setParts.length === 0) {
+          console.log(`Skipped row id=${id}, data_id=${data_id} because nothing to update`);
+          continue;
+        }
+
+        setParts.push(`update_by = CURRENT_TIMESTAMP`);
+
+        values.push(id, data_id);
+
+        const checkRow = await client.query(
           `
-        UPDATE eroll_db
-        SET ${setClause}, update_by = CURRENT_TIMESTAMP
-        WHERE id = $${keys.length + 1}
-        AND data_id = $${keys.length + 2}
+        SELECT id, data_id, castid, cast_cat, mapping, update_by
+        FROM eroll_db
+        WHERE id = $1 AND data_id = $2
         `,
-          [...values, id, data_id]
+          [id, data_id]
         );
+
+        console.log("before update rowCount ->", checkRow.rowCount);
+        console.log("before update row ->", checkRow.rows[0] || null);
+
+        const updateQuery = `
+        UPDATE eroll_db
+        SET ${setParts.join(", ")}
+        WHERE id = $${paramIndex}
+          AND data_id = $${paramIndex + 1}
+        RETURNING id, data_id, castid, cast_cat, mapping, update_by
+      `;
+
+        console.log("updateQuery ->", updateQuery);
+        console.log("values ->", values);
+
+        const updateResult = await client.query(updateQuery, values);
+
+        console.log("updateResult.rowCount ->", updateResult.rowCount);
+        console.log("updated row ->", updateResult.rows[0] || null);
+
+        if (updateResult.rowCount === 0) {
+          throw new Error(
+            `No row updated for id=${id} and data_id=${data_id}. Check whether the row exists in eroll_db.`
+          );
+        }
       }
 
       await client.query("COMMIT");
-
       return true;
-
     } catch (error) {
       await client.query("ROLLBACK");
+      console.error("bulkUpdateVoters error ->", error);
       throw error;
     } finally {
       client.release();
@@ -1711,16 +1544,31 @@ module.exports = {
     }
 
     // SEARCH FILTER
-    if (search && config.searchColumns.length > 0) {
+    // SEARCH FILTER ON ALL TABLE COLUMNS
+    if (search) {
+      const columnSql = `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = $1
+    ORDER BY ordinal_position
+  `;
 
-      const searchConditions = config.searchColumns.map(
-        col => `${col} ~* $${index}`
-      );
+      const columnResult = await pool.query(columnSql, [table]);
 
-      conditions.push(`(${searchConditions.join(" OR ")})`);
+      const searchableColumns = columnResult.rows
+        .map((row) => row.column_name)
+        .filter((col) => !["created_at", "updated_at"].includes(col)); // optional exclude
 
-      values.push(search);
-      index++;
+      if (searchableColumns.length > 0) {
+        const searchConditions = searchableColumns.map(
+          (col) => `COALESCE(${col}::text, '') ~* $${index}`
+        );
+
+        conditions.push(`(${searchConditions.join(" OR ")})`);
+        values.push(search);
+        index++;
+      }
     }
 
     // DATA QUERY
@@ -4590,16 +4438,24 @@ ${whereClause}
           NULLIF(BTRIM(ed.castid_surname), '') AS castid_surname,
           NULLIF(BTRIM(ed.castid), '') AS caste,
           NULLIF(BTRIM(ed.cast_cat), '') AS cast_cat,
-          NULLIF(BTRIM(ed.religion), '') AS religion
+
+          NULLIF(BTRIM(ecm.religion_hi), '') AS religion
 
         FROM eroll_db ed
+
         LEFT JOIN eroll_mapping em
           ON ed.data_id = em.data_id
          AND ed.ac_no = em.ac_id
          AND ed.bhag_no = em.bhag_no
          AND ed.sec_no = em.sec_no
+
         LEFT JOIN dataid_importmaster dim
           ON ed.data_id = dim.data_id
+
+        LEFT JOIN eroll_castmaster ecm
+          ON ecm.data_id = ed.data_id
+         AND UPPER(BTRIM(COALESCE(ecm.castid, ''))) = UPPER(BTRIM(COALESCE(ed.castid, '')))
+
         ${whereSql}
       ),
 
@@ -4647,22 +4503,40 @@ ${whereClause}
           SUM(r_count)::INT AS r_count,
 
           string_agg(DISTINCT castid_surname, ', ' ORDER BY castid_surname)
-            FILTER (WHERE castid_surname IS NOT NULL AND BTRIM(castid_surname) <> '') AS castid_surname,
+            FILTER (
+              WHERE castid_surname IS NOT NULL
+                AND BTRIM(castid_surname) <> ''
+            ) AS castid_surname,
 
           string_agg(DISTINCT caste, ', ' ORDER BY caste)
-            FILTER (WHERE caste IS NOT NULL AND BTRIM(caste) <> '') AS caste,
+            FILTER (
+              WHERE caste IS NOT NULL
+                AND BTRIM(caste) <> ''
+            ) AS caste,
 
           string_agg(DISTINCT cast_cat, ', ' ORDER BY cast_cat)
-            FILTER (WHERE cast_cat IS NOT NULL AND BTRIM(cast_cat) <> '') AS cast_cat,
+            FILTER (
+              WHERE cast_cat IS NOT NULL
+                AND BTRIM(cast_cat) <> ''
+            ) AS cast_cat,
 
           string_agg(DISTINCT religion, ', ' ORDER BY religion)
-            FILTER (WHERE religion IS NOT NULL AND BTRIM(religion) <> '') AS religion,
+            FILTER (
+              WHERE religion IS NOT NULL
+                AND BTRIM(religion) <> ''
+            ) AS religion,
 
           string_agg(DISTINCT district, ', ' ORDER BY district)
-            FILTER (WHERE district IS NOT NULL AND BTRIM(district) <> '') AS district,
+            FILTER (
+              WHERE district IS NOT NULL
+                AND BTRIM(district) <> ''
+            ) AS district,
 
           string_agg(DISTINCT block, ', ' ORDER BY block)
-            FILTER (WHERE block IS NOT NULL AND BTRIM(block) <> '') AS block,
+            FILTER (
+              WHERE block IS NOT NULL
+                AND BTRIM(block) <> ''
+            ) AS block,
 
           MIN(ac_no) AS ac_no,
           MIN(pc_no) AS pc_no
@@ -4670,9 +4544,7 @@ ${whereClause}
         FROM expanded
         WHERE surname IS NOT NULL
           AND BTRIM(surname) <> ''
-        GROUP BY
-          data_id,
-          surname
+        GROUP BY data_id, surname
       )
 
       INSERT INTO eroll_surname (
@@ -4721,7 +4593,11 @@ ${whereClause}
       const insertResult = await client.query(syncSql, values);
 
       const countValues = [dataIds];
-      let countSql = `SELECT COUNT(*)::INT AS total FROM eroll_surname WHERE data_id = ANY($1)`;
+      let countSql = `
+      SELECT COUNT(*)::INT AS total
+      FROM eroll_surname
+      WHERE data_id = ANY($1)
+    `;
 
       if (acNo) {
         countSql += ` AND ac_no = $2`;
@@ -4751,17 +4627,12 @@ ${whereClause}
     try {
       let { table, data_id, rowCount } = req.body;
 
-      console.log('body -0>>>>>> ', req.body)
-
-      // process.exit(1)
-
       if (!table || !tableConfig[table]) {
         return {
           success: false,
           message: "Invalid table name"
         };
       }
-      console.log('yyyyyy 1')
 
       data_id = Number(data_id);
       rowCount = Number(rowCount);
@@ -4773,16 +4644,12 @@ ${whereClause}
         };
       }
 
-      console.log('yyyyyy 2')
-
       if (!rowCount || isNaN(rowCount) || rowCount < 1) {
         return {
           success: false,
           message: "Valid rowCount is required"
         };
       }
-
-      console.log('yyyyyy 3')
 
       if (rowCount > 100) {
         return {
@@ -4791,29 +4658,48 @@ ${whereClause}
         };
       }
 
+      // 1) Get current max id
+      const maxIdResult = await pool.query(`
+      SELECT COALESCE(MAX(id), 0) AS max_id
+      FROM ${table}
+    `);
+
+      const maxId = Number(maxIdResult.rows[0]?.max_id || 0);
+
+      // 2) Build insert values with next ids
       const values = [];
       const placeholders = [];
 
       for (let i = 0; i < rowCount; i++) {
-        values.push(data_id);
-        placeholders.push(`($${i + 1})`);
+        const nextId = maxId + i + 1;
+        values.push(nextId, data_id);
+        placeholders.push(`($${values.length - 1}, $${values.length})`);
       }
 
-      const sql = `
-      INSERT INTO ${table} (data_id)
+      const insertSql = `
+      INSERT INTO ${table} (id, data_id)
       VALUES ${placeholders.join(", ")}
       RETURNING *;
     `;
 
-      const result = await pool.query(sql, values);
+      const result = await pool.query(insertSql, values);
 
-      console.log('yyyyyy 4')
+      // 3) Sync sequence after manual id insert
+      await pool.query(`
+      SELECT setval(
+        pg_get_serial_sequence('${table}', 'id'),
+        (SELECT COALESCE(MAX(id), 1) FROM ${table}),
+        true
+      );
+    `);
 
       return {
         success: true,
         message: `${result.rowCount} empty rows added successfully in ${table}`,
         insertedRows: result.rows,
-        count: result.rowCount
+        count: result.rowCount,
+        start_id: maxId + 1,
+        end_id: maxId + rowCount
       };
     } catch (error) {
       console.error("addEmptyRows error:", error);
@@ -4825,6 +4711,8 @@ ${whereClause}
   },
 
   saveMasterPatch: async (data) => {
+    const client = await pool.connect();
+
     try {
       const { table, id, data_id, updates } = data;
 
@@ -4863,6 +4751,7 @@ ${whereClause}
 
       for (const [key, value] of Object.entries(updates)) {
         if (!allowedColumns.includes(key)) continue;
+        if (key === "id" || key === "data_id") continue;
 
         let finalValue = value;
 
@@ -4879,13 +4768,10 @@ ${whereClause}
         index++;
       }
 
-      if (table === "dataid_importmaster" && !Object.keys(updates).includes("updated_at")) {
-        setClauses.push(`updated_at = $${index}`);
-        values.push(new Date());
-        index++;
-      }
-
-      if (table === "eroll_yojna_master" && !Object.keys(updates).includes("updated_at")) {
+      if (
+        (table === "dataid_importmaster" || table === "eroll_yojna_master") &&
+        !Object.prototype.hasOwnProperty.call(updates, "updated_at")
+      ) {
         setClauses.push(`updated_at = $${index}`);
         values.push(new Date());
         index++;
@@ -4898,24 +4784,106 @@ ${whereClause}
         };
       }
 
-      values.push(Number(id));
-      values.push(data_id);
+      await client.query("BEGIN");
 
-      const query = `
+      values.push(Number(id));
+      values.push(Number(data_id));
+
+      const masterQuery = `
       UPDATE ${table}
       SET ${setClauses.join(", ")}
       WHERE id = $${index} AND data_id = $${index + 1}
       RETURNING *;
     `;
 
-      const result = await pool.query(query, values);
+      const masterResult = await client.query(masterQuery, values);
 
-      if (result.rowCount === 0) {
+      if (masterResult.rowCount === 0) {
+        await client.query("ROLLBACK");
         return {
           success: false,
           message: "No matching row found"
         };
       }
+
+      // only for dataid_importmaster => sync mapped fields
+      if (table === "dataid_importmaster") {
+        /**
+         * dataid_importmaster -> eroll_mapping
+         * ac_no       -> ac_id
+         * ac_name_hi  -> ac_name (prefer hi)
+         * ac_name_en  -> ac_name (fallback if hi not present)
+         * is_active   -> is_active
+         */
+        const mappingSetClauses = [];
+        const mappingValues = [];
+        let mappingIdx = 1;
+
+        if (Object.prototype.hasOwnProperty.call(updates, "ac_no")) {
+          mappingSetClauses.push(`ac_id = $${mappingIdx}`);
+          mappingValues.push(updates.ac_no === "" ? null : updates.ac_no);
+          mappingIdx++;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(updates, "ac_name_hi")) {
+          mappingSetClauses.push(`ac_name = $${mappingIdx}`);
+          mappingValues.push(updates.ac_name_hi === "" ? null : updates.ac_name_hi);
+          mappingIdx++;
+        } else if (Object.prototype.hasOwnProperty.call(updates, "ac_name_en")) {
+          mappingSetClauses.push(`ac_name = $${mappingIdx}`);
+          mappingValues.push(updates.ac_name_en === "" ? null : updates.ac_name_en);
+          mappingIdx++;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(updates, "is_active")) {
+          mappingSetClauses.push(`is_active = $${mappingIdx}`);
+          mappingValues.push(updates.is_active === "" ? null : updates.is_active);
+          mappingIdx++;
+        }
+
+        if (mappingSetClauses.length > 0) {
+          mappingValues.push(Number(data_id));
+
+          const mappingQuery = `
+          UPDATE eroll_mapping
+          SET ${mappingSetClauses.join(", ")},
+              updated_at = CURRENT_DATE,
+              update_by = CURRENT_TIMESTAMP
+          WHERE data_id = $${mappingIdx};
+        `;
+
+          await client.query(mappingQuery, mappingValues);
+        }
+
+        /**
+         * dataid_importmaster -> eroll_db
+         * ac_no -> ac_no
+         */
+        const dbSetClauses = [];
+        const dbValues = [];
+        let dbIdx = 1;
+
+        if (Object.prototype.hasOwnProperty.call(updates, "ac_no")) {
+          dbSetClauses.push(`ac_no = $${dbIdx}`);
+          dbValues.push(updates.ac_no === "" ? null : updates.ac_no);
+          dbIdx++;
+        }
+
+        if (dbSetClauses.length > 0) {
+          dbValues.push(Number(data_id));
+
+          const dbQuery = `
+          UPDATE eroll_db
+          SET ${dbSetClauses.join(", ")},
+              update_by = CURRENT_TIMESTAMP
+          WHERE data_id = $${dbIdx};
+        `;
+
+          await client.query(dbQuery, dbValues);
+        }
+      }
+
+      await client.query("COMMIT");
 
       try {
         await refreshGlobalCache();
@@ -4925,15 +4893,22 @@ ${whereClause}
 
       return {
         success: true,
-        message: "Row updated successfully",
-        data: result.rows[0]
+        message:
+          table === "dataid_importmaster"
+            ? "Row updated successfully and synced"
+            : "Row updated successfully",
+        data: masterResult.rows[0]
       };
     } catch (error) {
+      await client.query("ROLLBACK");
       console.error("saveMasterPatch error:", error);
+
       return {
         success: false,
         message: error.message || "Something went wrong"
       };
+    } finally {
+      client.release();
     }
   },
 
@@ -5163,5 +5138,486 @@ ${whereClause}
       client.release();
     }
   },
+
+  getSurnameList: async (req) => {
+    try {
+      const body = req.body || {};
+
+      const page = Math.max(parseInt(body.page, 10) || 1, 1);
+
+      let limit =
+        body.limit === "All"
+          ? 100000
+          : Math.max(parseInt(body.limit, 10) || 50, 1);
+
+      if (limit > 100000) {
+        limit = 100000;
+      }
+
+      const offset = (page - 1) * limit;
+
+      const searchField = String(body.searchField || "All").trim();
+      const searchValue = String(body.searchValue || "").trim();
+      const minTotalCount =
+        body.min_total_count !== undefined &&
+          body.min_total_count !== null &&
+          body.min_total_count !== ""
+          ? Number(body.min_total_count)
+          : null;
+
+      const sortByMap = {
+        id: "es.id",
+        data_id: "es.data_id",
+        surname: "es.surname",
+        v_count: "es.v_count",
+        r_count: "es.r_count",
+        total_count: "(COALESCE(es.v_count, 0) + COALESCE(es.r_count, 0))",
+        castid_surname: "es.castid_surname",
+        caste: "es.caste",
+        cast_cat: "es.cast_cat",
+        religion: "es.religion",
+        district: "es.district",
+        block: "es.block",
+        ac_no: "es.ac_no",
+        pc_no: "es.pc_no",
+        process_status: "es.process_status",
+        process_count: "es.process_count",
+        last_process: "es.last_process",
+        processed_by: "es.processed_by",
+        updated_at: "es.updated_at",
+      };
+
+      const sortBy =
+        sortByMap[body.sortBy] ||
+        "(COALESCE(es.v_count, 0) + COALESCE(es.r_count, 0))";
+
+      const sortOrder =
+        String(body.sortOrder || "DESC").toUpperCase() === "ASC" ? "ASC" : "DESC";
+
+      const values = [];
+      let idx = 1;
+      const where = [];
+
+      const dataIds = Array.isArray(body.data_id)
+        ? body.data_id.map(Number).filter(Boolean)
+        : body.data_id
+          ? String(body.data_id)
+            .split(",")
+            .map(Number)
+            .filter(Boolean)
+          : [];
+
+      if (dataIds.length) {
+        where.push(`es.data_id = ANY($${idx}::int[])`);
+        values.push(dataIds);
+        idx++;
+      }
+
+      if (body.ac_no !== undefined && body.ac_no !== null && body.ac_no !== "") {
+        where.push(`es.ac_no = $${idx}`);
+        values.push(Number(body.ac_no));
+        idx++;
+      }
+
+      if (body.pc_no !== undefined && body.pc_no !== null && body.pc_no !== "") {
+        where.push(`es.pc_no = $${idx}`);
+        values.push(Number(body.pc_no));
+        idx++;
+      }
+
+      if (body.castid_surname) {
+        where.push(`es.castid_surname ILIKE $${idx}`);
+        values.push(`%${String(body.castid_surname).trim()}%`);
+        idx++;
+      }
+
+      if (body.cast_cat) {
+        where.push(`es.cast_cat ILIKE $${idx}`);
+        values.push(`%${String(body.cast_cat).trim()}%`);
+        idx++;
+      }
+
+      if (body.caste) {
+        where.push(`es.caste ILIKE $${idx}`);
+        values.push(`%${String(body.caste).trim()}%`);
+        idx++;
+      }
+
+      if (body.religion) {
+        where.push(`es.religion ILIKE $${idx}`);
+        values.push(`%${String(body.religion).trim()}%`);
+        idx++;
+      }
+
+      if (body.district) {
+        where.push(`es.district ILIKE $${idx}`);
+        values.push(`%${String(body.district).trim()}%`);
+        idx++;
+      }
+
+      if (body.block) {
+        where.push(`es.block ILIKE $${idx}`);
+        values.push(`%${String(body.block).trim()}%`);
+        idx++;
+      }
+
+      if (
+        body.process_status !== undefined &&
+        body.process_status !== null &&
+        body.process_status !== ""
+      ) {
+        where.push(`es.process_status = $${idx}`);
+        values.push(
+          body.process_status === true ||
+          body.process_status === "true" ||
+          body.process_status === 1 ||
+          body.process_status === "1"
+        );
+        idx++;
+      }
+
+      if (
+        body.processed_by !== undefined &&
+        body.processed_by !== null &&
+        body.processed_by !== ""
+      ) {
+        where.push(`es.processed_by = $${idx}`);
+        values.push(Number(body.processed_by));
+        idx++;
+      }
+
+      if (searchValue) {
+        if (searchField === "voter-surname") {
+          where.push(`COALESCE(es.v_count, 0) > 0 AND es.surname ILIKE $${idx}`);
+          values.push(`%${searchValue}%`);
+          idx++;
+        } else if (searchField === "relation-surname") {
+          where.push(`COALESCE(es.r_count, 0) > 0 AND es.surname ILIKE $${idx}`);
+          values.push(`%${searchValue}%`);
+          idx++;
+        } else {
+          where.push(`es.surname ILIKE $${idx}`);
+          values.push(`%${searchValue}%`);
+          idx++;
+        }
+      } else {
+        if (searchField === "voter-surname") {
+          where.push(`COALESCE(es.v_count, 0) > 0`);
+        } else if (searchField === "relation-surname") {
+          where.push(`COALESCE(es.r_count, 0) > 0`);
+        }
+      }
+
+      if (minTotalCount !== null && !Number.isNaN(minTotalCount)) {
+        if (searchField === "voter-surname") {
+          where.push(`COALESCE(es.v_count, 0) >= $${idx}`);
+        } else if (searchField === "relation-surname") {
+          where.push(`COALESCE(es.r_count, 0) >= $${idx}`);
+        } else {
+          where.push(`(COALESCE(es.v_count, 0) + COALESCE(es.r_count, 0)) >= $${idx}`);
+        }
+        values.push(minTotalCount);
+        idx++;
+      }
+
+      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+      const countSql = `
+      SELECT COUNT(*)::INT AS total
+      FROM eroll_surname es
+      ${whereSql}
+    `;
+
+      // COALESCE(es.v_count, 0) + COALESCE(es.r_count, 0) AS total_count,
+
+      const dataSql = `
+      SELECT
+        es.id,
+        es.data_id,
+        es.surname,
+        es.v_count,
+        es.r_count,
+        es.castid_surname,
+        es.caste,
+        es.cast_cat,
+        es.religion,
+        es.district,
+        es.block,
+        es.ac_no,
+        es.pc_no,
+        es.process_status,
+        es.process_count,
+        CASE
+          WHEN es.last_process IS NULL THEN NULL
+          WHEN es.last_process::date = CURRENT_DATE THEN 'Today'
+          WHEN es.last_process::date = CURRENT_DATE - INTERVAL '1 day' THEN 'Yesterday'
+          ELSE TO_CHAR(es.last_process, 'DD Mon YYYY')
+        END AS last_process,
+        es.processed_by,
+        CASE
+          WHEN es.updated_at IS NULL THEN NULL
+          WHEN es.updated_at::date = CURRENT_DATE THEN 'Today'
+          WHEN es.updated_at::date = CURRENT_DATE - INTERVAL '1 day' THEN 'Yesterday'
+          ELSE TO_CHAR(es.updated_at, 'DD Mon YYYY')
+        END AS updated_at
+      FROM eroll_surname es
+      ${whereSql}
+      ORDER BY v_count DESC
+      LIMIT $${idx} OFFSET $${idx + 1}
+    `;
+
+      const countResult = await pool.query(countSql, values);
+      const total = Number(countResult.rows[0]?.total || 0);
+
+      const dataValues = [...values, limit, offset];
+      const dataResult = await pool.query(dataSql, dataValues);
+
+      const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
+
+      return {
+        success: true,
+        data: dataResult.rows || [],
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPrevPage: page > 1,
+        },
+      };
+    } catch (error) {
+      console.error("getSurnameList model error:", error);
+      throw error;
+    }
+  },
+
+  syncDeleteDataId: async (data) => {
+    const client = await pool.connect();
+
+    try {
+      let dataIds = data.data_ids || [];
+
+      if (!Array.isArray(dataIds)) {
+        dataIds = [dataIds];
+      }
+
+      dataIds = dataIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+      if (dataIds.length === 0) {
+        return {
+          success: false,
+          message: "Valid data_id is required",
+        };
+      }
+
+      await client.query("BEGIN");
+
+      const inactiveImportMasterQuery = `
+      UPDATE dataid_importmaster
+      SET
+        is_active = 0,
+        updated_at = NOW()
+      WHERE data_id = ANY($1::int[])
+    `;
+      await client.query(inactiveImportMasterQuery, [dataIds]);
+
+      const deleteQueries = [
+        {
+          table: "eroll_castmaster",
+          query: `DELETE FROM eroll_castmaster WHERE data_id = ANY($1::int[])`,
+          params: [dataIds],
+        },
+        {
+          table: "eroll_dropdown",
+          query: `DELETE FROM eroll_dropdown WHERE data_id = ANY($1::int[])`,
+          params: [dataIds],
+        },
+        {
+          table: "eroll_yojna_master",
+          query: `DELETE FROM eroll_yojna_master WHERE data_id = ANY($1::text[])`,
+          params: [dataIds.map(String)],
+        },
+        {
+          table: "user_data_assignments",
+          query: `DELETE FROM user_data_assignments WHERE data_id = ANY($1::bigint[])`,
+          params: [dataIds],
+        },
+
+        {
+          table: "eroll_db",
+          query: `DELETE FROM eroll_db WHERE data_id = ANY($1::int[])`,
+          params: [dataIds],
+        },
+        {
+          table: "eroll_mapping",
+          query: `DELETE FROM eroll_mapping WHERE data_id = ANY($1::int[])`,
+          params: [dataIds],
+        },
+        {
+          table: "eroll_surname",
+          query: `DELETE FROM eroll_surname WHERE data_id = ANY($1::int[])`,
+          params: [dataIds],
+        },
+      ];
+
+      for (const item of deleteQueries) {
+        await client.query(item.query, item.params);
+      }
+
+      await client.query("COMMIT");
+
+      return {
+        success: true,
+        message: "Data ID synced successfully. dataid_importmaster inactivated and related data deleted.",
+        data: {
+          data_ids: dataIds,
+        },
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      console.error("syncDeleteDataId error:", error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  inactivateDataId: async (data) => {
+    const client = await pool.connect();
+
+    try {
+      let dataIds = data?.data_id || data?.data_ids || [];
+
+      // support single value also
+      if (!Array.isArray(dataIds)) {
+        dataIds = [dataIds];
+      }
+
+      // clean values
+      dataIds = dataIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+      if (!dataIds.length) {
+        throw new Error("Valid data_id is required");
+      }
+
+      await client.query("BEGIN");
+
+      const checkQuery = `
+        SELECT data_id
+        FROM dataid_importmaster
+        WHERE data_id = ANY($1::int[])
+      `;
+      const checkRes = await client.query(checkQuery, [dataIds]);
+
+      if (checkRes.rowCount === 0) {
+        throw new Error("No matching data_id found");
+      }
+
+      const foundIds = checkRes.rows.map((row) => Number(row.data_id));
+      const missingIds = dataIds.filter((id) => !foundIds.includes(id));
+
+      const updateQuery = `
+        UPDATE dataid_importmaster
+        SET
+          is_active = 0,
+          updated_at = NOW()
+        WHERE data_id = ANY($1::int[])
+      `;
+      const updateRes = await client.query(updateQuery, [foundIds]);
+
+      await client.query("COMMIT");
+
+      return {
+        success: true,
+        message: "Data id inactivated successfully",
+        updated_count: updateRes.rowCount,
+        updated_data_ids: foundIds,
+        missing_data_ids: missingIds
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  getCountsByDataIds: async (dataIds = []) => {
+    try {
+      if (!Array.isArray(dataIds) || dataIds.length === 0) {
+        return {
+          success: false,
+          message: "data_ids array is required",
+          data: []
+        };
+      }
+
+      const res = await pool.query(
+        `
+      SELECT 
+        data_id,
+        COUNT(*)::BIGINT AS total_count
+      FROM eroll_db
+      WHERE data_id = ANY($1)
+      GROUP BY data_id
+      `,
+        [dataIds]
+      );
+
+      const dbCounts = res.rows;
+
+      const map = new Map(
+        dbCounts.map(row => [Number(row.data_id), Number(row.total_count)])
+      );
+
+      const finalCounts = dataIds.map(id => ({
+        data_id: id,
+        total_count: map.get(id) || 0
+      }));
+
+      if (finalCounts.length > 0) {
+        const values = [];
+        const placeholders = [];
+
+        finalCounts.forEach((row, index) => {
+          const i = index * 2;
+          placeholders.push(`($${i + 1}, $${i + 2})`);
+          values.push(row.data_id, row.total_count);
+        });
+
+        await pool.query(
+          `
+        INSERT INTO eroll_db_counts 
+          (data_id, total_count)
+        VALUES 
+          ${placeholders.join(", ")}
+        ON CONFLICT (data_id)
+        DO UPDATE SET
+          total_count = EXCLUDED.total_count,
+          updated_at = NOW()
+        `,
+          values
+        );
+      }
+
+      return {
+        success: true,
+        message: "Counts calculated and stored successfully",
+        data: finalCounts
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        message: "Failed to calculate/store counts",
+        error: error.message
+      };
+    }
+  }
 
 }

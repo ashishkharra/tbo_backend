@@ -8,6 +8,10 @@ const teamRoutes = require('./team.route');
 const dataIdRoutes = require('./dataId.routes.js')
 const accessCheck = require('./accessCheck.route.js')
 
+router.get('/', (req, res) => {
+    res.send('Server is running')
+})
+
 router.use('/auth', authRoutes);
 router.use('/access-check', accessCheck);
 router.use('/dataset', datasetRoute );

@@ -5,7 +5,8 @@ const { key, NODE_ENV } = require("../config/global.js");
 const customFunction = require("../middlewares/customFunction");
 const authModel = require('../models/auth.model.js')
 const { generateOtp, sendOtpToAuthenticatedEmail, maskEmail, hasLoginAccess, createSessionAndLogin, logEvent, DEVICE_OTP_EXPIRY_MINUTES, USER_OTP_EXPIRY_MINUTES, DEVICE_TRUST_DAYS, SESSION_EXPIRY_DAYS } = require('../middlewares/customFunction')
-const { decodeEncryptedToken, decryptRefreshToken, hashToken } = require('../helper/token_helper.js')
+const { decodeEncryptedToken, decryptRefreshToken, hashToken } = require('../helper/token_helper.js');
+const { decryptPassword, encryptPassword } = require('../helper/helper.js');
 
 
 const getGloballyTrustedDevice = async (client, { generated_device_id, platform }) => {
@@ -175,11 +176,59 @@ const authController = {
         });
       }
 
-      if (!user.is_active) {
+      let loginAccess = user.login_access;
+
+      if (!loginAccess) {
         await client.query("ROLLBACK");
         return res.status(403).json({
           success: false,
           message: "Your account is inactive",
+          data: {},
+        });
+      }
+
+      if (typeof loginAccess === "string") {
+        try {
+          loginAccess = JSON.parse(loginAccess);
+        } catch (err) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({
+            success: false,
+            message: "Invalid login access data",
+            data: {},
+          });
+        }
+      }
+
+      const hasWebAccess =
+        loginAccess?.web === true || loginAccess?.web === "true";
+
+      const hasMobileAccess =
+        loginAccess?.mobile === true || loginAccess?.mobile === "true";
+
+      if (!hasWebAccess && !hasMobileAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "Your account is inactive",
+          data: {},
+        });
+      }
+
+      if (platform === "WEB" && !hasWebAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "You don't have web access",
+          data: {},
+        });
+      }
+
+      if ((platform === "ANDROID" || platform === "MOBILE") && !hasMobileAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "You don't have mobile access",
           data: {},
         });
       }
@@ -193,13 +242,8 @@ const authController = {
         });
       }
 
-      let isPasswordValid = false;
-
-      try {
-        isPasswordValid = await bcrypt.compare(String(password), String(user.password));
-      } catch (e) {
-        isPasswordValid = String(password) === String(user.password);
-      }
+      const originalPassword = decryptPassword(user.password);
+      const isPasswordValid = String(password) === originalPassword;
 
       if (!isPasswordValid) {
         await client.query("ROLLBACK");
@@ -252,8 +296,6 @@ const authController = {
         generated_device_id: normalizedGeneratedDeviceId,
         platform: normalizedPlatform,
       });
-
-      console.log('gggggggg ', globallyTrustedDevice)
 
       await markOldUnusedOtpsUsed({
         client,
@@ -382,6 +424,11 @@ const authController = {
             },
           });
 
+          await pool.query(
+            `UPDATE users SET is_active = true WHERE id = $1`,
+            [user.id]
+          )
+
           await client.query("COMMIT");
 
           return res.status(200).json({
@@ -390,13 +437,13 @@ const authController = {
             data: {
               flow: "DIRECT_LOGIN",
               otp_required: false,
-              trusted_device: true,
-              device_already_verified: true,
-              user_already_verified: true,
               token: sessionData.encryptedToken,
               session_token: sessionData.encryptedToken,
               expires_at: sessionData.expires_at,
-              user: sessionData.user,
+              user: {
+                ...sessionData.user,
+                last_login: new Date()
+              }
             },
           });
         }
@@ -715,11 +762,59 @@ const authController = {
         });
       }
 
-      if (!user.is_active) {
+      let loginAccess = user.login_access;
+
+      if (!loginAccess) {
         await client.query("ROLLBACK");
         return res.status(403).json({
           success: false,
           message: "Your account is inactive",
+          data: {},
+        });
+      }
+
+      if (typeof loginAccess === "string") {
+        try {
+          loginAccess = JSON.parse(loginAccess);
+        } catch (err) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({
+            success: false,
+            message: "Invalid login access data",
+            data: {},
+          });
+        }
+      }
+
+      const hasWebAccess =
+        loginAccess?.web === true || loginAccess?.web === "true";
+
+      const hasMobileAccess =
+        loginAccess?.mobile === true || loginAccess?.mobile === "true";
+
+      if (!hasWebAccess && !hasMobileAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "Your account is inactive",
+          data: {},
+        });
+      }
+
+      if (platform === "WEB" && !hasWebAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "You don't have web access",
+          data: {},
+        });
+      }
+
+      if ((platform === "ANDROID" || platform === "MOBILE") && !hasMobileAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "You don't have mobile access",
           data: {},
         });
       }
@@ -912,6 +1007,11 @@ const authController = {
             generated_device_id: normalizedGeneratedDeviceId,
           },
         });
+
+        await pool.query(
+          `UPDATE users SET is_active = true WHERE id = $1`,
+          [user.id]
+        )
 
         await client.query("COMMIT");
 
@@ -1124,11 +1224,59 @@ const authController = {
         });
       }
 
-      if (!user.is_active) {
+      let loginAccess = user.login_access;
+
+      if (!loginAccess) {
         await client.query("ROLLBACK");
         return res.status(403).json({
           success: false,
           message: "Your account is inactive",
+          data: {},
+        });
+      }
+
+      if (typeof loginAccess === "string") {
+        try {
+          loginAccess = JSON.parse(loginAccess);
+        } catch (err) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({
+            success: false,
+            message: "Invalid login access data",
+            data: {},
+          });
+        }
+      }
+
+      const hasWebAccess =
+        loginAccess?.web === true || loginAccess?.web === "true";
+
+      const hasMobileAccess =
+        loginAccess?.mobile === true || loginAccess?.mobile === "true";
+
+      if (!hasWebAccess && !hasMobileAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "Your account is inactive",
+          data: {},
+        });
+      }
+
+      if (platform === "WEB" && !hasWebAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "You don't have web access",
+          data: {},
+        });
+      }
+
+      if ((platform === "ANDROID" || platform === "MOBILE") && !hasMobileAccess) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          success: false,
+          message: "You don't have mobile access",
           data: {},
         });
       }
@@ -1306,6 +1454,11 @@ const authController = {
         },
       });
 
+      await pool.query(
+        `UPDATE users SET is_active = true WHERE id = $1`,
+        [user.id]
+      )
+
       await client.query("COMMIT");
 
       return res.status(200).json({
@@ -1363,6 +1516,13 @@ const authController = {
 
       await client.query(
         `
+        UPDATE users SET is_active = false WHERE id = $1
+        `,
+        [req?.user?.id]
+      )
+
+      await client.query(
+        `
       UPDATE user_sessions
       SET
         is_active = false,
@@ -1403,11 +1563,10 @@ const authController = {
         mobile,
         role,
         permissions
-      } = req.body.data;
+      } = req.body;
 
-      console.log('reab ', req.body)
 
-      if (!username || !email || !password || !mobile) {
+      if (!username || !password || !mobile) {
         return res.status(400).json({
           success: false,
           message: 'Username, email, password, and mobile are required'
@@ -1454,7 +1613,6 @@ const authController = {
 
       const existingUser = await authModel.findExistingUser({
         username,
-        email,
         mobile
       });
 
@@ -1464,10 +1622,10 @@ const authController = {
           message: 'Username, email, or mobile already exists'
         });
       }
-      const encryptedPassword = customFunction.encrypt(password, key);
+      const encryptedPassword = encryptPassword(password);
       const result = await authModel.createUser({
         username,
-        email,
+        email: email || null,
         authenticated_email: authenticatedEmail || null,
         password: encryptedPassword,
         mobile: mobile || null,
@@ -1483,7 +1641,7 @@ const authController = {
         data: {
           id: result.id,
           username,
-          email,
+          email: email || null,
           mobile: mobile || null,
           role,
           permissions: normalizedLoginAccess
@@ -1508,10 +1666,11 @@ const authController = {
         status: req.query.status || "all",
         search: req.query.search || "",
         page: Number(req.query.page || 1),
-        limit: Number(req.query.limit || 1000),
+        limit: Number(req.query.limit || 50),
       };
 
       const result = await authModel.fetchUsers(req.user, filters);
+
       const teams = await authModel.fetchTeams();
 
       const teamMap = {};
@@ -1617,7 +1776,7 @@ const authController = {
         });
       }
 
-      const result = await authModel.getUserDetails(userId);
+      const result = await authModel.getUserDetails(userId, req.user);
 
       if (!result) {
         return res.status(404).json({
@@ -1688,16 +1847,6 @@ const authController = {
         });
       }
 
-      if (payload.assignedModules || payload.assignedDatasets) {
-        payload.modules_code = await generateModulesCode(
-          payload.assignedModules || [],
-          payload.assignedDatasets || [],
-          payload.assignedSubModules || [],
-          payload.assignedNavbarPages || [],
-          id
-        );
-      }
-
       const updatedUser = await authModel.updateUserById(id, payload);
 
       return res.json({
@@ -1714,29 +1863,60 @@ const authController = {
     }
   },
 
-  deleteUser: async (req, res) => {
+  deleteUsers: async (req, res) => {
     try {
-      const { id } = req.params;
+      let { ids } = req.body;
 
-      const user = await authModel.getUserById(id);
-      if (!user) {
-        return res.status(404).json({
+      if (!Array.isArray(ids)) {
+        if (ids !== undefined && ids !== null) {
+          ids = [ids];
+        } else {
+          ids = [];
+        }
+      }
+
+      ids = ids
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+      if (!ids.length) {
+        return res.status(400).json({
           success: false,
-          message: "User not found",
+          message: "Valid user ids are required",
         });
       }
 
-      await deleteUserById(id);
+      const existingUsers = await authModel.getUsersByIds(ids);
+
+      if (!existingUsers.length) {
+        return res.status(404).json({
+          success: false,
+          message: "No users found for deletion",
+        });
+      }
+
+      const existingIds = existingUsers.map((u) => Number(u.id));
+      const notFoundIds = ids.filter((id) => !existingIds.includes(id));
+
+      const deletedCount = await authModel.deleteUsersByIds(existingIds);
 
       return res.json({
         success: true,
-        message: "User permanently deleted",
+        message:
+          deletedCount === 1
+            ? "User permanently deleted"
+            : `${deletedCount} users permanently deleted`,
+        data: {
+          deletedIds: existingIds,
+          deletedCount,
+          notFoundIds,
+        },
       });
     } catch (error) {
-      console.error("deleteUser controller error:", error);
+      console.error("deleteUsers controller error:", error);
       return res.status(500).json({
         success: false,
-        message: "Failed to delete user",
+        message: "Failed to delete users",
       });
     }
   },
@@ -2140,6 +2320,23 @@ const authController = {
       return res.status(500).json({
         success: false,
         message: error.message
+      })
+    }
+  },
+
+  unlinkUser: async (req, res) => {
+    let result = null
+    try {
+      result = await authModel.unlinkUser(req.params)
+      return res.status(200).json({
+        success: result?.success || true,
+        message: result?.message
+      })
+    } catch (error) {
+      console.log('Unlink user error : ', error)
+      return res.status(500).json({
+        success: result?.success || false,
+        message: result?.message || error.message
       })
     }
   }

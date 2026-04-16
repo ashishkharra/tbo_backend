@@ -56,9 +56,10 @@ const dataAssignmentController = {
 
   getUserAssignments: async (req, res) => {
     try {
-      const user_id = req.params.user_id;
+      const user_id = req.params.user_id || null;
       const requesterRole = req.user?.role || null;
       const selected_role_id = req.query.role_id || null;
+      const currentUserId = req.user.id ||  null
 
       if (!user_id) {
         return res.status(400).json({
@@ -70,7 +71,8 @@ const dataAssignmentController = {
       const result = await dataAssignmentModel.getUserAssignments(
         user_id,
         requesterRole,
-        selected_role_id
+        selected_role_id,
+        currentUserId
       );
 
       return res.status(200).json({

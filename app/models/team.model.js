@@ -219,7 +219,7 @@ async function syncPermissionsFromParent(childId, parentId) {
     const parentPermissions = JSON.parse(parentResult.rows[0].permissions || '[]');
     const parentPermissionsArray = Array.isArray(parentPermissions) ? parentPermissions : [];
 
-    const updatedPermissions = parentPermissionsArray.filter(perm => 
+    const updatedPermissions = parentPermissionsArray.filter(perm =>
       allChildrenPermissions.has(perm) || !removedChildPermissionsArray.includes(perm)
     );
 
@@ -230,8 +230,8 @@ async function syncPermissionsFromParent(childId, parentId) {
 }
 
 async function getMembersByParentId(parentId, limit, offset) {
-const { rows } = await pool.query(
-  `
+  const { rows } = await pool.query(
+    `
   SELECT
     up.id                AS relationship_id,
     up.assigned_at,
@@ -275,8 +275,8 @@ const { rows } = await pool.query(
   ORDER BY up.assigned_at DESC
   LIMIT $2 OFFSET $3
   `,
-  [parentId, limit, offset]
-);
+    [parentId, limit, offset]
+  );
   return rows;
 }
 
@@ -305,8 +305,571 @@ async function removeParentRelationship(userId, parentId) {
   await pool.query(query, [userId, parentId]);
 }
 
+// new team apis ->>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+const getUsersRoles = async (currentUser, filters = {}) => {
+  const {
+    search = "",
+    role = "",
+    limit = 50,
+  } = filters;
+
+  const roleParams = [];
+  const userParams = [];
+
+  let roleParamIndex = 1;
+  let userParamIndex = 1;
+
+  let roleWhere = ` WHERE 1=1 `;
+  let userWhere = ` WHERE 1=1 `;
+
+  // search filter
+  if (search && String(search).trim()) {
+    roleWhere += `
+      AND (
+        r.name ~* $${roleParamIndex}
+        OR COALESCE(r.code, '') ~* $${roleParamIndex}
+        OR CAST(r.id AS TEXT) ~* $${roleParamIndex}
+      )
+    `;
+    roleParams.push(String(search).trim());
+    roleParamIndex++;
+
+    userWhere += `
+      AND (
+        COALESCE(u.username, '') ~* $${userParamIndex}
+        OR COALESCE(u.role, '') ~* $${userParamIndex}
+        OR CAST(u.id AS TEXT) ~* $${userParamIndex}
+      )
+    `;
+    userParams.push(String(search).trim());
+    userParamIndex++;
+  }
+
+  // selected role filter for users only
+  if (role && String(role).trim() && String(role).trim() !== "all") {
+    userWhere += `
+      AND (
+        LOWER(COALESCE(u.role, '')) = LOWER($${userParamIndex})
+        OR EXISTS (
+          SELECT 1
+          FROM roles rr
+          WHERE rr.id::text = $${userParamIndex}
+            AND LOWER(COALESCE(rr.code, '')) = LOWER(COALESCE(u.role, ''))
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM roles rr
+          WHERE rr.id::text = $${userParamIndex}
+            AND LOWER(COALESCE(rr.name, '')) = LOWER(COALESCE(u.role, ''))
+        )
+      )
+    `;
+    userParams.push(String(role).trim());
+    userParamIndex++;
+  }
+
+  // role-based visibility for users
+  const currentRole = String(currentUser?.role || "").toLowerCase();
+  const currentUserId = Number(currentUser?.id || 0);
+
+  if (currentRole === "super_admin") {
+    // no restriction
+  } else if (currentRole === "admin") {
+    userWhere += `
+      AND LOWER(COALESCE(u.role, '')) != 'super_admin'
+    `;
+
+    if (currentUserId) {
+      userWhere += ` AND u.id != $${userParamIndex} `;
+      userParams.push(currentUserId);
+      userParamIndex++;
+    }
+  } else {
+    userWhere += `
+      AND LOWER(COALESCE(u.role, '')) NOT IN ('super_admin', 'admin')
+    `;
+
+    if (currentUserId) {
+      userWhere += ` AND u.id != $${userParamIndex} `;
+      userParams.push(currentUserId);
+      userParamIndex++;
+    }
+  }
+
+  roleParams.push(Number(limit) || 50);
+  const roleLimitParam = roleParamIndex;
+
+  userParams.push(Number(limit) || 50);
+  const userLimitParam = userParamIndex;
+
+  const rolesQuery = `
+    SELECT
+      r.id,
+      r.name,
+      r.code
+    FROM roles r
+    ${roleWhere}
+    ORDER BY r.name ASC
+    LIMIT $${roleLimitParam}
+  `;
+
+  const usersQuery = `
+    SELECT
+      u.id,
+      u.username,
+      u.role
+    FROM users u
+    ${userWhere}
+    ORDER BY u.username ASC
+    LIMIT $${userLimitParam}
+  `;
+
+  const [rolesRes, usersRes] = await Promise.all([
+    pool.query(rolesQuery, roleParams),
+    pool.query(usersQuery, userParams),
+  ]);
+
+  return {
+    roles: rolesRes.rows,
+    users: usersRes.rows,
+  };
+};
+
+/**
+ * Add parent-child link
+ */
+async function addParentChildLink({ parent_user_id, child_user_id, role = null }) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const parentId = Number(parent_user_id);
+    const childId = Number(child_user_id);
+
+    if (!parentId || !childId) {
+      throw new Error("Valid parent_user_id and child_user_id are required");
+    }
+
+    if (parentId === childId) {
+      throw new Error("A user cannot be parent of itself");
+    }
+
+    const userCheck = await client.query(
+      `
+      SELECT id, role
+      FROM users
+      WHERE id = ANY($1::bigint[])
+      `,
+      [[parentId, childId]]
+    );
+
+    if (userCheck.rowCount !== 2) {
+      throw new Error("Parent or child user not found");
+    }
+
+    const parentUser = userCheck.rows.find(
+      (row) => Number(row.id) === parentId
+    );
+    const childUser = userCheck.rows.find(
+      (row) => Number(row.id) === childId
+    );
+
+    const parentRole = String(parentUser?.role || "").trim().toLowerCase();
+    const childRole = String(childUser?.role || "").trim().toLowerCase();
+
+    // Rule 1: super_admin cannot be under anyone
+    if (childRole === "super_admin") {
+      throw new Error("super_admin cannot be assigned under any role");
+    }
+
+    // Rule 2: admin can only be under super_admin
+    if (childRole === "admin" && parentRole !== "super_admin") {
+      throw new Error("admin can only be assigned under super_admin");
+    }
+
+    const result = await client.query(
+      `
+      INSERT INTO user_hierarchy (
+        parent_user_id,
+        child_user_id,
+        role
+      )
+      VALUES ($1, $2, $3)
+      ON CONFLICT (parent_user_id, child_user_id)
+      DO UPDATE SET
+        role = EXCLUDED.role,
+        updated_at = NOW()
+      RETURNING *
+      `,
+      [parentId, childId, role]
+    );
+
+    await client.query("COMMIT");
+
+    return {
+      success: true,
+      message: "Parent-child link saved successfully",
+      data: result.rows[0]
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    return {
+      success: false,
+      message: error.message || "Failed to save parent-child link"
+    };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Remove parent-child link
+ */
+async function removeParentChildLink({ parent_user_id, child_user_id }) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const parentId = Number(parent_user_id);
+    const childId = Number(child_user_id);
+
+    if (!parentId || !childId) {
+      throw new Error("Valid parent_user_id and child_user_id are required");
+    }
+
+    const result = await client.query(
+      `
+      DELETE FROM user_hierarchy
+      WHERE parent_user_id = $1
+        AND child_user_id = $2
+      RETURNING *
+      `,
+      [parentId, childId]
+    );
+
+    await client.query("COMMIT");
+
+    if (result.rowCount === 0) {
+      return {
+        success: false,
+        message: "Parent-child link not found"
+      };
+    }
+
+    return {
+      success: true,
+      message: "Parent-child link removed successfully",
+      data: result.rows[0]
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    return {
+      success: false,
+      message: error.message || "Failed to remove parent-child link"
+    };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Get direct children
+ */
+async function getDirectChildren(user_id) {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        uh.id,
+        uh.parent_user_id,
+        uh.child_user_id,
+        uh.role AS hierarchy_role,
+        u.name,
+        u.username,
+        u.mobile_no,
+        u.login_access,
+        u.role
+      FROM user_hierarchy uh
+      INNER JOIN users u
+        ON u.id = uh.child_user_id
+      WHERE uh.parent_user_id = $1
+      ORDER BY u.name NULLS LAST, u.username NULLS LAST
+      `,
+      [user_id]
+    );
+
+    return {
+      success: true,
+      data: result.rows
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to fetch children"
+    };
+  }
+}
+
+/**
+ * Get direct parents
+ */
+async function getDirectParents(user_id) {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        uh.id,
+        uh.parent_user_id,
+        uh.child_user_id,
+        uh.role AS hierarchy_role,
+        u.name,
+        u.username,
+        u.mobile_no,
+        u.login_access,
+        u.role
+      FROM user_hierarchy uh
+      INNER JOIN users u
+        ON u.id = uh.parent_user_id
+      WHERE uh.child_user_id = $1
+      ORDER BY u.name NULLS LAST, u.username NULLS LAST
+      `,
+      [user_id]
+    );
+
+    return {
+      success: true,
+      data: result.rows
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to fetch parents"
+    };
+  }
+}
+
+/**
+ * Get all descendants
+ */
+async function getAllChildren(user_id) {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        c.child_user_id,
+        c.level_no,
+        u.name,
+        u.username,
+        u.mobile_no,
+        u.login_access,
+        u.role
+      FROM get_all_children($1) c
+      INNER JOIN users u
+        ON u.id = c.child_user_id
+      ORDER BY c.level_no, u.name NULLS LAST, u.username NULLS LAST
+      `,
+      [user_id]
+    );
+
+    return {
+      success: true,
+      data: result.rows
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to fetch all children"
+    };
+  }
+}
+
+/**
+ * Get all ancestors
+ */
+async function getAllParents(user_id) {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        p.parent_user_id,
+        p.level_no,
+        u.name,
+        u.username,
+        u.mobile_no,
+        u.login_access,
+        u.role
+      FROM get_all_parents($1) p
+      INNER JOIN users u
+        ON u.id = p.parent_user_id
+      ORDER BY p.level_no, u.name NULLS LAST, u.username NULLS LAST
+      `,
+      [user_id]
+    );
+
+    return {
+      success: true,
+      data: result.rows
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to fetch all parents"
+    };
+  }
+}
+
+/**
+ * Effective permissions as module-action pairs
+ */
+async function getEffectivePermissions(user_id) {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        ep.module_id,
+        pm.name AS module_name,
+        pm.code AS module_code,
+        ep.action_id,
+        pa.name AS action_name,
+        pa.code AS action_code
+      FROM get_effective_user_permissions($1) ep
+      INNER JOIN permission_modules pm
+        ON pm.id = ep.module_id
+      INNER JOIN permission_actions pa
+        ON pa.id = ep.action_id
+      ORDER BY ep.module_id, ep.action_id
+      `,
+      [user_id]
+    );
+
+    return {
+      success: true,
+      data: result.rows
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to resolve effective permissions"
+    };
+  }
+}
+
+/**
+ * Effective permissions grouped by module
+ */
+async function getEffectivePermissionsGrouped(user_id) {
+  try {
+    const result = await pool.query(
+      `
+      WITH grouped AS (
+        SELECT *
+        FROM get_effective_user_permissions_grouped($1)
+      )
+      SELECT
+        g.module_id,
+        pm.name AS module_name,
+        pm.code AS module_code,
+        g.actions
+      FROM grouped g
+      INNER JOIN permission_modules pm
+        ON pm.id = g.module_id
+      ORDER BY g.module_id
+      `,
+      [user_id]
+    );
+
+    return {
+      success: true,
+      data: result.rows
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to resolve grouped effective permissions"
+    };
+  }
+}
+
+/**
+ * Refresh team table manually
+ */
+async function refreshTeams() {
+  try {
+    await pool.query(`SELECT refresh_teams()`);
+    return {
+      success: true,
+      message: "Teams refreshed successfully"
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to refresh teams"
+    };
+  }
+}
+
+/**
+ * Get teams rows
+ */
+async function getTeams(filters = {}) {
+  try {
+    const {
+      parent_user_id = null,
+      child_user_id = null,
+      module_id = null
+    } = filters;
+
+    const params = [];
+    let where = ` WHERE 1=1 `;
+    let i = 1;
+
+    if (parent_user_id) {
+      where += ` AND t.parent_user_id = $${i} `;
+      params.push(parent_user_id);
+      i++;
+    }
+
+    if (child_user_id) {
+      where += ` AND t.child_user_id = $${i} `;
+      params.push(child_user_id);
+      i++;
+    }
+
+    if (module_id) {
+      where += ` AND t.modules @> $${i}::jsonb `;
+      params.push(JSON.stringify([Number(module_id)]));
+      i++;
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        t.*
+      FROM teams t
+      ${where}
+      ORDER BY t.parent_user_id, t.child_user_id
+      `,
+      params
+    );
+
+    return {
+      success: true,
+      data: result.rows
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error.message || "Failed to fetch teams"
+    };
+  }
+}
+
+
 
 module.exports = {
+  getUsersRoles,
   isTeamCodeExists,
   calculateHierarchyPath,
   insertTeam,
@@ -321,5 +884,15 @@ module.exports = {
   syncPermissionsFromParent,
   getMembersByParentId,
   countMembersByParentId,
-  removeParentRelationship
+  removeParentRelationship,
+  addParentChildLink,
+  removeParentChildLink,
+  getDirectChildren,
+  getDirectParents,
+  getAllChildren,
+  getAllParents,
+  getEffectivePermissions,
+  getEffectivePermissionsGrouped,
+  refreshTeams,
+  getTeams
 };

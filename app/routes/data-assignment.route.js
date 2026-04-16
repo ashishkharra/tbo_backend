@@ -5,6 +5,7 @@ const { authenticateToken, requireModulePermission } = require('../middlewares/a
 
 router.get('/meta', [authenticateToken], dataAssignmentController.getMeta);
 router.get('/options', [authenticateToken], dataAssignmentController.getOptions);
+router.get('/details', [authenticateToken], dataAssignmentController.getUserAssignments);
 router.get('/details/:user_id', [authenticateToken], dataAssignmentController.getUserAssignments);
 router.post('/preview', [authenticateToken], dataAssignmentController.getPreview);
 
